@@ -2,6 +2,7 @@
 
 use crate::config::{AppTheme, CONFIG_VERSION, Config};
 use crate::fl;
+use crate::key_bind::key_binds;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
@@ -49,6 +50,7 @@ pub enum Message {
     ToggleWatch,
     UpdateConfig(Config),
     WatchTick(u32),
+    Quit,
 }
 
 /// Create a COSMIC application from the app model
@@ -111,7 +113,7 @@ impl cosmic::Application for AppModel {
             context_page: ContextPage::default(),
             about,
             nav,
-            key_binds: HashMap::new(),
+            key_binds: key_binds(),
             // Optional configuration file for an application.
             config: cosmic_config::Config::new(Self::APP_ID, CONFIG_VERSION)
                 .map(|context| match Config::get_entry(&context) {
@@ -139,17 +141,30 @@ impl cosmic::Application for AppModel {
 
     /// Elements to pack at the start of the header bar.
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
-        let menu_bar = menu::bar(vec![menu::Tree::with_children(
-            menu::root(fl!("view")).apply(Element::from),
-            menu::items(
-                &self.key_binds,
-                vec![
-                    menu::Item::Button(fl!("settings-menu"), None, MenuAction::Settings),
-                    menu::Item::Divider,
-                    menu::Item::Button(fl!("about-menu"), None, MenuAction::About),
-                ],
+        let menu_bar = menu::bar(vec![
+            menu::Tree::with_children(
+                menu::root(fl!("file")).apply(Element::from),
+                menu::items(
+                    &self.key_binds,
+                    vec![
+                        menu::Item::Button(fl!("settings-menu"), None, MenuAction::Settings),
+                        menu::Item::Divider,
+                        menu::Item::Button(fl!("quit"), None, MenuAction::Quit),
+                    ],
+                ),
             ),
-        )])
+            menu::Tree::with_children(
+                menu::root(fl!("view")).apply(Element::from),
+                menu::items(
+                    &self.key_binds,
+                    vec![menu::Item::Button(
+                        fl!("about-ethereal-waves"),
+                        None,
+                        MenuAction::About,
+                    )],
+                ),
+            ),
+        ])
         .item_width(menu::ItemWidth::Uniform(250))
         .item_height(menu::ItemHeight::Dynamic(40))
         .spacing(1.0);
@@ -363,6 +378,10 @@ impl cosmic::Application for AppModel {
                     eprintln!("failed to open {url:?}: {err}");
                 }
             },
+
+            Message::Quit => {
+                log::info!("recieved quit.");
+            }
         }
         Task::none()
     }
@@ -450,6 +469,7 @@ pub enum ContextPage {
 pub enum MenuAction {
     About,
     Settings,
+    Quit,
 }
 
 impl menu::action::MenuAction for MenuAction {
@@ -459,6 +479,7 @@ impl menu::action::MenuAction for MenuAction {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
+            MenuAction::Quit => Message::Quit,
         }
     }
 }

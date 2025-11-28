@@ -1,0 +1,28 @@
+use cosmic::{
+    iced::keyboard::Key,
+    widget::menu::key_bind::{KeyBind, Modifier},
+};
+use std::collections::HashMap;
+
+use crate::app::MenuAction;
+
+pub fn key_binds() -> HashMap<KeyBind, MenuAction> {
+    let mut key_binds = HashMap::new();
+
+    macro_rules! bind {
+        ([$($modifier:ident),* $(,)?], $key:expr, $action:ident) => {{
+            key_binds.insert(
+                KeyBind {
+                    modifiers: vec![$(Modifier::$modifier),*],
+                    key: $key,
+                },
+                MenuAction::$action
+            );
+        }};
+    }
+
+    bind!([Ctrl], Key::Character("q".into()), Quit);
+    bind!([Ctrl], Key::Character(",".into()), Settings);
+
+    key_binds
+}

@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod i18n;
+mod key_bind;
 
 use app::Flags;
 use config::Config;
