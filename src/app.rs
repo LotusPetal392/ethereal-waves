@@ -3,6 +3,7 @@
 use crate::config::{AppTheme, CONFIG_VERSION, Config};
 use crate::fl;
 use crate::key_bind::key_binds;
+use crate::menu::menu_bar;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::alignment::{Horizontal, Vertical};
@@ -141,34 +142,7 @@ impl cosmic::Application for AppModel {
 
     /// Elements to pack at the start of the header bar.
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
-        let menu_bar = menu::bar(vec![
-            menu::Tree::with_children(
-                menu::root(fl!("file")).apply(Element::from),
-                menu::items(
-                    &self.key_binds,
-                    vec![
-                        menu::Item::Button(fl!("settings-menu"), None, MenuAction::Settings),
-                        menu::Item::Divider,
-                        menu::Item::Button(fl!("quit"), None, MenuAction::Quit),
-                    ],
-                ),
-            ),
-            menu::Tree::with_children(
-                menu::root(fl!("view")).apply(Element::from),
-                menu::items(
-                    &self.key_binds,
-                    vec![menu::Item::Button(
-                        fl!("about-ethereal-waves"),
-                        None,
-                        MenuAction::About,
-                    )],
-                ),
-            ),
-        ])
-        .item_width(menu::ItemWidth::Uniform(250))
-        .item_height(menu::ItemHeight::Dynamic(40))
-        .spacing(1.0);
-
+        let menu_bar = menu_bar(&self.key_binds);
         vec![menu_bar.into()]
     }
 
