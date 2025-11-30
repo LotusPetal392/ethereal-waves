@@ -12,6 +12,8 @@ settings-menu = Settings...
 settings = Settings
 appearance = Appearance
 theme = Theme
+library = Library
+add-new-location = Add New Location
 
 match-desktop = Match Desktop
 dark = Dark

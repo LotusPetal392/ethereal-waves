@@ -6,13 +6,28 @@ use crate::key_bind::key_binds;
 use crate::menu::menu_bar;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::alignment::{Horizontal, Vertical};
-use cosmic::iced::{Alignment, Length, Subscription};
-use cosmic::widget::{self, about::About, icon, menu, nav_bar};
+use cosmic::theme;
+use cosmic::widget::{
+    self,
+    about::About,
+    icon,
+    menu::{self, Action},
+    nav_bar,
+};
+use cosmic::{
+    cosmic_theme,
+    dialog::file_chooser,
+    iced::{
+        Alignment, Length, Subscription,
+        alignment::{Horizontal, Vertical},
+        event::{self, Event},
+        keyboard::{Event as KeyEvent, Key, Modifiers},
+    },
+};
 use cosmic::{iced_futures, prelude::*};
 use futures_util::SinkExt;
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use urlencoding::decode;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
@@ -45,13 +60,19 @@ pub struct AppModel {
 /// Messages emitted by the application and its widgets.
 #[derive(Debug, Clone)]
 pub enum Message {
+    AddLibraryDialog,
     AppTheme(AppTheme),
+    Cancelled,
+    Key(Modifiers, Key),
     LaunchUrl(String),
+    LibraryPathOpenError(Arc<file_chooser::Error>),
+    Quit,
+    RemoveLibraryPath(String),
+    SelectedPaths(Vec<String>),
     ToggleContextPage(ContextPage),
     ToggleWatch,
     UpdateConfig(Config),
     WatchTick(u32),
-    Quit,
 }
 
 /// Create a COSMIC application from the app model
@@ -253,6 +274,12 @@ impl cosmic::Application for AppModel {
     fn subscription(&self) -> Subscription<Self::Message> {
         // Add subscriptions which are always active.
         let mut subscriptions = vec![
+            event::listen_with(|event, _status, _window_id| match event {
+                Event::Keyboard(KeyEvent::KeyPressed { key, modifiers, .. }) => {
+                    Some(Message::Key(modifiers, key))
+                }
+                _ => None,
+            }),
             // Watch for application configuration changes.
             self.core()
                 .watch_config::<Config>(Self::APP_ID)
@@ -318,13 +345,73 @@ impl cosmic::Application for AppModel {
         }
 
         match message {
+            Message::AddLibraryDialog => {
+                return cosmic::task::future(async move {
+                    let dialog = file_chooser::open::Dialog::new().title(fl!("add-new-location"));
+
+                    match dialog.open_folders().await {
+                        Ok(response) => {
+                            let mut paths: Vec<String> = Vec::new();
+
+                            for u in response.urls() {
+                                if let Ok(decoded) = decode(u.path()) {
+                                    paths.push(decoded.into_owned());
+                                } else {
+                                    println!("Can't decode URL.");
+                                }
+                            }
+                            Message::SelectedPaths(paths)
+                        }
+                        Err(file_chooser::Error::Cancelled) => Message::Cancelled,
+                        Err(why) => Message::LibraryPathOpenError(Arc::new(why)),
+                    }
+                });
+            }
+
             Message::AppTheme(app_theme) => {
                 config_set!(app_theme, app_theme);
                 return self.update_config();
             }
 
-            Message::WatchTick(time) => {
-                self.time = time;
+            Message::Cancelled => {}
+
+            Message::Key(modifiers, key) => {
+                for (key_bind, action) in self.key_binds.iter() {
+                    if key_bind.matches(modifiers, &key) {
+                        return self.update(action.message());
+                    }
+                }
+            }
+
+            Message::LibraryPathOpenError(why) => {
+                log::error!("{why}");
+            }
+
+            Message::LaunchUrl(url) => match open::that_detached(&url) {
+                Ok(()) => {}
+                Err(err) => {
+                    eprintln!("failed to open {url:?}: {err}");
+                }
+            },
+
+            Message::Quit => {
+                log::info!("recieved quit.");
+            }
+
+            Message::RemoveLibraryPath(path) => {
+                let mut library_paths = self.config.library_paths.clone();
+                library_paths.remove(&path);
+                config_set!(library_paths, library_paths);
+            }
+
+            Message::SelectedPaths(paths) => {
+                let mut library_paths = self.config.library_paths.clone();
+
+                for path in paths {
+                    library_paths.insert(path);
+                }
+
+                config_set!(library_paths, library_paths);
             }
 
             Message::ToggleWatch => {
@@ -346,15 +433,8 @@ impl cosmic::Application for AppModel {
                 self.config = config;
             }
 
-            Message::LaunchUrl(url) => match open::that_detached(&url) {
-                Ok(()) => {}
-                Err(err) => {
-                    eprintln!("failed to open {url:?}: {err}");
-                }
-            },
-
-            Message::Quit => {
-                log::info!("recieved quit.");
+            Message::WatchTick(time) => {
+                self.time = time;
             }
         }
         Task::none()
@@ -387,15 +467,41 @@ impl AppModel {
     }
 
     fn settings(&self) -> Element<'_, Message> {
+        let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
+        let app_theme_selected = match self.config.app_theme {
+            AppTheme::Dark => 1,
+            AppTheme::Light => 2,
+            AppTheme::System => 0,
+        };
+
+        let mut library_column = widget::column();
+        library_column = library_column.push(
+            widget::button::text(fl!("add-new-location")).on_press(Message::AddLibraryDialog),
+        );
+
+        let library_paths_length = self.config.library_paths.len() - 1;
+
+        for (i, path) in self.config.library_paths.iter().enumerate() {
+            let mut path_row = widget::row::with_capacity(2);
+            // Adds text
+            path_row =
+                path_row.push(widget::text::text(path.clone()).width(Length::FillPortion(1)));
+            // Adds delete button
+            path_row = path_row.push(
+                widget::button::icon(widget::icon::from_name("window-close-symbolic"))
+                    .on_press(Message::RemoveLibraryPath(path.clone())),
+            );
+            library_column = library_column.push(path_row.width(Length::Fill).padding(space_xxs));
+
+            if i < library_paths_length {
+                library_column = library_column.push(widget::divider::horizontal::light());
+            }
+        }
+
         widget::settings::view_column(vec![
             widget::settings::section()
                 .title(fl!("appearance"))
                 .add({
-                    let app_theme_selected = match self.config.app_theme {
-                        AppTheme::Dark => 1,
-                        AppTheme::Light => 2,
-                        AppTheme::System => 0,
-                    };
                     widget::settings::item::builder(fl!("theme")).control(widget::dropdown(
                         &self.app_theme_labels,
                         Some(app_theme_selected),
@@ -408,6 +514,10 @@ impl AppModel {
                         },
                     ))
                 })
+                .into(),
+            widget::settings::section()
+                .title(fl!("library"))
+                .add(library_column)
                 .into(),
         ])
         .into()

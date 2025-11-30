@@ -7,6 +7,7 @@ use cosmic::{
     theme,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 pub const CONFIG_VERSION: u64 = 1;
 
@@ -32,6 +33,7 @@ impl AppTheme {
 #[serde(default)]
 pub struct Config {
     pub app_theme: AppTheme,
+    pub library_paths: HashSet<String>,
 }
 
 impl Config {
@@ -59,6 +61,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             app_theme: AppTheme::System,
+            library_paths: HashSet::new(),
         }
     }
 }
