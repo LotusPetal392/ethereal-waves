@@ -14,6 +14,9 @@ appearance = Appearance
 theme = Theme
 library = Library
 add-new-location = Add New Location
+update-library = Update Library
+updating-library = Updating Library
+updating = Updating
 
 match-desktop = Match Desktop
 dark = Dark

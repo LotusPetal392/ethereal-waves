@@ -1,4 +1,4 @@
-use crate::app::{MenuAction, Message};
+use crate::app::{AppModel, MenuAction, Message};
 use crate::fl;
 use cosmic::{
     Apply, Element,
@@ -6,14 +6,25 @@ use cosmic::{
 };
 use std::collections::HashMap;
 
-pub fn menu_bar<'a>(key_binds: &HashMap<KeyBind, MenuAction>) -> Element<'a, Message> {
+pub fn menu_bar<'a>(
+    is_updating: bool,
+    key_binds: &HashMap<KeyBind, MenuAction>,
+) -> Element<'a, Message> {
     menu::bar(vec![
         menu::Tree::with_children(
             menu::root(fl!("file")).apply(Element::from),
             menu::items(
                 key_binds,
                 vec![
-                    menu::Item::Button(fl!("settings-menu"), None, MenuAction::Settings),
+                    if is_updating {
+                        menu::Item::ButtonDisabled(
+                            fl!("update-library"),
+                            None,
+                            MenuAction::UpdateLibrary,
+                        )
+                    } else {
+                        menu::Item::Button(fl!("update-library"), None, MenuAction::UpdateLibrary)
+                    },
                     menu::Item::Divider,
                     menu::Item::Button(fl!("quit"), None, MenuAction::Quit),
                 ],
@@ -23,11 +34,11 @@ pub fn menu_bar<'a>(key_binds: &HashMap<KeyBind, MenuAction>) -> Element<'a, Mes
             menu::root(fl!("view")).apply(Element::from),
             menu::items(
                 key_binds,
-                vec![menu::Item::Button(
-                    fl!("about-ethereal-waves"),
-                    None,
-                    MenuAction::About,
-                )],
+                vec![
+                    menu::Item::Button(fl!("settings-menu"), None, MenuAction::Settings),
+                    menu::Item::Divider,
+                    menu::Item::Button(fl!("about-ethereal-waves"), None, MenuAction::About),
+                ],
             ),
         ),
     ])

@@ -26,7 +26,7 @@ use cosmic::{
 };
 use cosmic::{iced_futures, prelude::*};
 use futures_util::SinkExt;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 use urlencoding::decode;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -55,6 +55,10 @@ pub struct AppModel {
     app_theme_labels: Vec<String>,
 
     config_handler: Option<cosmic_config::Config>,
+
+    is_updating: bool,
+    playback_progress: f32,
+    update_progress: f64,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -66,12 +70,18 @@ pub enum Message {
     Key(Modifiers, Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
+    PlaybackTimeChanged(f32),
     Quit,
     RemoveLibraryPath(String),
     SelectedPaths(Vec<String>),
     ToggleContextPage(ContextPage),
     ToggleWatch,
+    TransportPrevious,
+    TransportPlay,
+    TransportNext,
     UpdateConfig(Config),
+    UpdateLibrary,
+    UpdateProgress(f64),
     WatchTick(u32),
 }
 
@@ -153,6 +163,9 @@ impl cosmic::Application for AppModel {
             watch_is_active: false,
             app_theme_labels: vec![fl!("match-desktop"), fl!("dark"), fl!("light")],
             config_handler: _flags.config_handler,
+            is_updating: false,
+            playback_progress: 0.0,
+            update_progress: 0.0,
         };
 
         // Create a startup command that sets the window title.
@@ -163,7 +176,7 @@ impl cosmic::Application for AppModel {
 
     /// Elements to pack at the start of the header bar.
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
-        let menu_bar = menu_bar(&self.key_binds);
+        let menu_bar = menu_bar(self.is_updating, &self.key_binds);
         vec![menu_bar.into()]
     }
 
@@ -315,7 +328,7 @@ impl cosmic::Application for AppModel {
     ///
     /// Tasks may be returned for asynchronous execution of code in the background
     /// on the application's async runtime.
-    fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
+    fn update(&mut self, message: Self::Message) -> cosmic::Task<cosmic::Action<Self::Message>> {
         // Helper for updating configuration
         macro_rules! config_set {
             ($name: ident, $value: expr) => {
@@ -366,6 +379,11 @@ impl cosmic::Application for AppModel {
                         Err(why) => Message::LibraryPathOpenError(Arc::new(why)),
                     }
                 });
+            }
+
+            Message::PlaybackTimeChanged(time) => {
+                self.playback_progress = time;
+                println!("playback time changed: {}", time);
             }
 
             Message::AppTheme(app_theme) => {
@@ -429,13 +447,44 @@ impl cosmic::Application for AppModel {
                 }
             }
 
+            Message::TransportPrevious => {
+                println!("Previous")
+            }
+
+            Message::TransportPlay => {
+                println!("Play/Pause")
+            }
+
+            Message::TransportNext => {
+                println!("Next")
+            }
+
             Message::UpdateConfig(config) => {
                 self.config = config;
+            }
+
+            Message::UpdateLibrary => {
+                if self.is_updating {
+                    println!("is updating");
+                    return Task::none();
+                }
+                self.is_updating = true;
+                println!("update started");
+
+                /*return cosmic::Task::stream(cosmic::iced_futures::stream::channel(
+                    |tx| async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        _ = tx.send(Message::UpdateProgress(25.0)).await;
+                    },
+                ))
+                .map(cosmic::Action::App);*/
             }
 
             Message::WatchTick(time) => {
                 self.time = time;
             }
+
+            Message::UpdateProgress(progress) => self.update_progress = progress,
         }
         Task::none()
     }
@@ -446,6 +495,120 @@ impl cosmic::Application for AppModel {
         self.nav.activate(id);
 
         self.update_title()
+    }
+
+    /// Footer area
+    fn footer(&self) -> Option<Element<'_, Message>> {
+        let cosmic_theme::Spacing {
+            space_xxs,
+            space_xs,
+            space_s,
+            space_m,
+            space_l,
+            // space_xl,
+            ..
+        } = theme::active().cosmic().spacing;
+
+        let progress_bar_height = Length::Fixed(4.0);
+        let progress_bar = widget::progress_bar(0.0..=100.0, 50.0).height(progress_bar_height);
+        let progress_count_display = format!("0 / 0  {:.0}%", self.update_progress);
+
+        let container = widget::layer_container(widget::column::with_children(vec![
+            // Update library progress indicator row
+            if self.is_updating {
+                widget::row::with_children(vec![
+                    widget::text(fl!("updating")).into(),
+                    progress_bar.into(),
+                    widget::text(progress_count_display).into(),
+                ])
+                .align_y(Alignment::Center)
+                .padding(space_xs)
+                .spacing(space_xs)
+                .into()
+            } else {
+                widget::row::with_capacity(0).into()
+            },
+            // Actual footer
+            widget::row::with_children(vec![
+                // Left column
+                widget::column::with_children(vec![
+                    widget::icon(widget::icon::from_path(PathBuf::from(
+                        "../resources/icons/hicolor/scalable/note.svg",
+                    )))
+                    .width(Length::Fixed(64.0))
+                    .height(Length::Fixed(64.0))
+                    .into(),
+                    widget::button::text(String::from("placeholder")).into(),
+                ])
+                .width(Length::FillPortion(1))
+                .into(),
+                // Center column
+                widget::column::with_children(vec![
+                    // Playback progress bar row
+                    widget::row::with_children(vec![
+                        widget::text(String::from("0:00")).into(),
+                        widget::slider(
+                            0.0..=1000.0,
+                            self.playback_progress,
+                            Message::PlaybackTimeChanged,
+                        )
+                        .into(),
+                        widget::text(String::from("-0:00")).into(),
+                    ])
+                    .align_y(Alignment::Center)
+                    .padding(space_xxs)
+                    .spacing(space_xs)
+                    .into(),
+                    // Playback control row
+                    widget::row::with_children(vec![
+                        widget::column::with_capacity(0).width(Length::Fill).into(),
+                        widget::column::with_children(vec![
+                            widget::row::with_children(vec![
+                                widget::button::icon(widget::icon::from_name(
+                                    "media-skip-backward-symbolic",
+                                ))
+                                .on_press(Message::TransportPrevious)
+                                .padding(space_xs)
+                                .icon_size(space_m)
+                                .into(),
+                                widget::button::icon(widget::icon::from_name(
+                                    "media-playback-start-symbolic",
+                                ))
+                                .on_press(Message::TransportPlay)
+                                .padding(space_xs)
+                                .icon_size(space_l)
+                                .into(),
+                                widget::button::icon(widget::icon::from_name(
+                                    "media-skip-forward-symbolic",
+                                ))
+                                .on_press(Message::TransportNext)
+                                .padding(space_xs)
+                                .icon_size(space_m)
+                                .into(),
+                            ])
+                            .align_y(Alignment::Center)
+                            .into(),
+                        ])
+                        .into(),
+                        widget::column::with_capacity(0).width(Length::Fill).into(),
+                    ])
+                    .align_y(Alignment::Center)
+                    .spacing(space_xxs)
+                    .width(Length::Fill)
+                    .into(),
+                ])
+                .width(Length::FillPortion(6))
+                .into(),
+                // Right column
+                widget::column::with_capacity(0)
+                    .width(Length::FillPortion(1))
+                    .into(),
+            ])
+            .into(),
+        ]))
+        .layer(cosmic_theme::Layer::Primary);
+
+        Some(container.into())
     }
 }
 
@@ -554,6 +717,7 @@ pub enum MenuAction {
     About,
     Settings,
     Quit,
+    UpdateLibrary,
 }
 
 impl menu::action::MenuAction for MenuAction {
@@ -564,6 +728,7 @@ impl menu::action::MenuAction for MenuAction {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
             MenuAction::Quit => Message::Quit,
+            MenuAction::UpdateLibrary => Message::UpdateLibrary,
         }
     }
 }
