@@ -1,4 +1,4 @@
-use crate::app::{AppModel, MenuAction, Message};
+use crate::app::{MenuAction, Message};
 use crate::fl;
 use cosmic::{
     Apply, Element,

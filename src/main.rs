@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod i18n;
 mod key_bind;
+mod library;
 mod menu;
 
 use app::Flags;

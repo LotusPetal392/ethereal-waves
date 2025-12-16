@@ -21,6 +21,7 @@ pub fn key_binds() -> HashMap<KeyBind, MenuAction> {
         }};
     }
 
+    bind!([Ctrl], Key::Character("u".into()), UpdateLibrary);
     bind!([Ctrl], Key::Character("q".into()), Quit);
     bind!([Ctrl], Key::Character(",".into()), Settings);
 

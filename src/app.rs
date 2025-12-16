@@ -3,6 +3,7 @@
 use crate::config::{AppTheme, CONFIG_VERSION, Config};
 use crate::fl;
 use crate::key_bind::key_binds;
+use crate::library::{Library, MediaMetaData};
 use crate::menu::menu_bar;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
@@ -26,8 +27,14 @@ use cosmic::{
 };
 use cosmic::{iced_futures, prelude::*};
 use futures_util::SinkExt;
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use gstreamer as gst;
+
+use gstreamer_pbutils as pbutils;
+use std::{collections::HashMap, process, sync::Arc, time::Duration};
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use url::Url;
 use urlencoding::decode;
+use walkdir::WalkDir;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
@@ -56,9 +63,10 @@ pub struct AppModel {
 
     config_handler: Option<cosmic_config::Config>,
 
+    library: Library,
     is_updating: bool,
     playback_progress: f32,
-    update_progress: f64,
+    update_progress: f32,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -79,9 +87,10 @@ pub enum Message {
     TransportPrevious,
     TransportPlay,
     TransportNext,
+    UpdateComplete(Library),
     UpdateConfig(Config),
     UpdateLibrary,
-    UpdateProgress(f64),
+    UpdateProgress(f32),
     WatchTick(u32),
 }
 
@@ -163,6 +172,7 @@ impl cosmic::Application for AppModel {
             watch_is_active: false,
             app_theme_labels: vec![fl!("match-desktop"), fl!("dark"), fl!("light")],
             config_handler: _flags.config_handler,
+            library: Library::new(),
             is_updating: false,
             playback_progress: 0.0,
             update_progress: 0.0,
@@ -413,7 +423,7 @@ impl cosmic::Application for AppModel {
             },
 
             Message::Quit => {
-                log::info!("recieved quit.");
+                process::exit(0);
             }
 
             Message::RemoveLibraryPath(path) => {
@@ -459,32 +469,152 @@ impl cosmic::Application for AppModel {
                 println!("Next")
             }
 
+            Message::UpdateComplete(library) => {
+                self.library = library;
+                self.is_updating = false;
+            }
+
             Message::UpdateConfig(config) => {
                 self.config = config;
             }
 
             Message::UpdateLibrary => {
+                // TODO: Make this suck less and add error handling
                 if self.is_updating {
-                    println!("is updating");
                     return Task::none();
                 }
                 self.is_updating = true;
-                println!("update started");
+                self.update_progress = 0.0;
 
-                /*return cosmic::Task::stream(cosmic::iced_futures::stream::channel(
-                    |tx| async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                        _ = tx.send(Message::UpdateProgress(25.0)).await;
-                    },
-                ))
-                .map(cosmic::Action::App);*/
+                let library_paths = self.config.library_paths.clone();
+
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+
+                std::thread::spawn(move || {
+                    let mut library: Library = Library::new();
+                    let valid_extensions = [
+                        "flac".to_string(),
+                        "m4a".to_string(),
+                        "mp3".to_string(),
+                        "ogg".to_string(),
+                        "opus".to_string(),
+                    ];
+
+                    // Get paths
+                    for path in library_paths {
+                        for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
+                            let extension = entry
+                                .file_name()
+                                .to_str()
+                                .unwrap_or("")
+                                .split(".")
+                                .last()
+                                .unwrap_or("");
+                            let size = entry.metadata().unwrap().len();
+
+                            if valid_extensions.contains(&extension.to_string())
+                                && size > 4096 as u64
+                            {
+                                library
+                                    .media
+                                    .insert(entry.into_path(), MediaMetaData::new());
+                            }
+                        }
+                    }
+
+                    // Get metadata
+                    gst::init().unwrap();
+
+                    let discoverer = match pbutils::Discoverer::new(gst::ClockTime::from_seconds(5))
+                    {
+                        Ok(discoverer) => discoverer,
+                        Err(error) => panic!("Failed to create discoverer: {:?}", error),
+                    };
+
+                    let mut update_progress: f32 = 0.0;
+                    let mut update_percent_old: f32 = 0.0;
+                    let update_total: f32 = library.media.len() as f32;
+
+                    library.media.iter_mut().for_each(|(file, track_metadata)| {
+                        let file_str = match file.to_str() {
+                            Some(file_str) => file_str,
+                            None => "",
+                        };
+
+                        let uri = Url::from_file_path(file_str).unwrap();
+
+                        let info = discoverer
+                            .discover_uri(&uri.as_str())
+                            .expect("Cannot read file.");
+
+                        // Read tags
+                        if let Some(tags) = info.tags() {
+                            // Title
+                            track_metadata.title =
+                                tags.get::<gst::tags::Title>().map(|t| t.get().to_owned());
+                            // Artist
+                            track_metadata.artist =
+                                tags.get::<gst::tags::Artist>().map(|t| t.get().to_owned());
+                            // Album
+                            track_metadata.album =
+                                tags.get::<gst::tags::Album>().map(|t| t.get().to_owned());
+                            //Album Artist
+                            track_metadata.album_artist = tags
+                                .get::<gst::tags::AlbumArtist>()
+                                .map(|t| t.get().to_owned());
+                            // Genre
+                            track_metadata.genre =
+                                tags.get::<gst::tags::Genre>().map(|t| t.get().to_owned());
+                            // Track Number
+                            track_metadata.track_number = tags
+                                .get::<gst::tags::TrackNumber>()
+                                .map(|t| t.get().to_owned());
+                            // Track Count
+                            track_metadata.track_count = tags
+                                .get::<gst::tags::TrackCount>()
+                                .map(|t| t.get().to_owned());
+                            // Disc Number
+                            track_metadata.album_disc_number = tags
+                                .get::<gst::tags::AlbumVolumeNumber>()
+                                .map(|t| t.get().to_owned());
+                            // Disc Count
+                            track_metadata.album_disc_count = tags
+                                .get::<gst::tags::AlbumVolumeCount>()
+                                .map(|t| t.get().to_owned());
+                            // Duration
+                            if let Some(duration) = info.duration() {
+                                track_metadata.duration = Some(duration.seconds());
+                            }
+                        } else {
+                            // If there's no metadata just fill in the filename
+                            track_metadata.title = Some(file.to_string_lossy().to_string());
+                        }
+
+                        // Update progress bar
+                        update_progress = update_progress + 1.0;
+                        if update_percent_old != (update_progress / update_total * 100.0).round() {
+                            _ = tx.send(Message::UpdateProgress(
+                                (update_progress / update_total * 100.0).round(),
+                            ));
+                        }
+                        update_percent_old = (update_progress / update_total * 100.0).round();
+                    });
+
+                    std::thread::sleep(tokio::time::Duration::from_secs(1));
+                    _ = tx.send(Message::UpdateComplete(library));
+                });
+
+                return cosmic::Task::stream(UnboundedReceiverStream::new(rx))
+                    .map(cosmic::Action::App);
             }
 
             Message::WatchTick(time) => {
                 self.time = time;
             }
 
-            Message::UpdateProgress(progress) => self.update_progress = progress,
+            Message::UpdateProgress(progress) => {
+                self.update_progress = progress;
+            }
         }
         Task::none()
     }
@@ -502,45 +632,58 @@ impl cosmic::Application for AppModel {
         let cosmic_theme::Spacing {
             space_xxs,
             space_xs,
-            space_s,
             space_m,
             space_l,
-            // space_xl,
             ..
         } = theme::active().cosmic().spacing;
 
         let progress_bar_height = Length::Fixed(4.0);
-        let progress_bar = widget::progress_bar(0.0..=100.0, 50.0).height(progress_bar_height);
-        let progress_count_display = format!("0 / 0  {:.0}%", self.update_progress);
+        let progress_bar =
+            widget::progress_bar(0.0..=100.0, self.update_progress).height(progress_bar_height);
+        let progress_count_display = format!("{:.0}%", self.update_progress,);
 
-        let container = widget::layer_container(widget::column::with_children(vec![
+        let container = widget::container(widget::column::with_children(vec![
             // Update library progress indicator row
             if self.is_updating {
-                widget::row::with_children(vec![
-                    widget::text(fl!("updating")).into(),
-                    progress_bar.into(),
-                    widget::text(progress_count_display).into(),
+                widget::column::with_children(vec![
+                    widget::layer_container(widget::column::with_children(vec![
+                        widget::row::with_children(vec![
+                            widget::text(fl!("updating")).into(),
+                            progress_bar.into(),
+                            widget::text(progress_count_display).into(),
+                        ])
+                        .align_y(Alignment::Center)
+                        .padding(space_xs)
+                        .spacing(space_xs)
+                        .into(),
+                    ]))
+                    .layer(cosmic_theme::Layer::Primary)
+                    .into(),
+                    widget::row::with_capacity(0)
+                        .height(Length::Fixed(7.0))
+                        .into(),
                 ])
-                .align_y(Alignment::Center)
-                .padding(space_xs)
-                .spacing(space_xs)
                 .into()
             } else {
                 widget::row::with_capacity(0).into()
             },
             // Actual footer
-            widget::row::with_children(vec![
+            widget::layer_container(widget::row::with_children(vec![
                 // Left column
                 widget::column::with_children(vec![
-                    widget::icon(widget::icon::from_path(PathBuf::from(
-                        "../resources/icons/hicolor/scalable/note.svg",
-                    )))
-                    .width(Length::Fixed(64.0))
-                    .height(Length::Fixed(64.0))
+                    widget::row::with_children(vec![
+                        widget::icon(widget::icon::from_svg_bytes(include_bytes!(
+                            "../resources/icons/hicolor/scalable/note.svg"
+                        )))
+                        .width(Length::Fixed(64.0))
+                        .height(Length::Fixed(64.0))
+                        .into(),
+                    ])
+                    .align_y(Alignment::Center)
                     .into(),
-                    widget::button::text(String::from("placeholder")).into(),
                 ])
                 .width(Length::FillPortion(1))
+                .padding(space_xs)
                 .into(),
                 // Center column
                 widget::column::with_children(vec![
@@ -603,10 +746,10 @@ impl cosmic::Application for AppModel {
                 widget::column::with_capacity(0)
                     .width(Length::FillPortion(1))
                     .into(),
-            ])
+            ]))
+            .layer(cosmic_theme::Layer::Primary)
             .into(),
-        ]))
-        .layer(cosmic_theme::Layer::Primary);
+        ]));
 
         Some(container.into())
     }
