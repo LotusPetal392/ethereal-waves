@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod footer;
 mod i18n;
 mod key_bind;
 mod library;
