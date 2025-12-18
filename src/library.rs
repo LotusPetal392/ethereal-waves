@@ -1,8 +1,13 @@
 use serde::{Deserialize, Serialize};
+use serde_json;
 use std::collections::HashMap;
+use std::error::Error;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use xdg::BaseDirectories;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Library {
     pub media: HashMap<PathBuf, MediaMetaData>,
 }
@@ -13,6 +18,19 @@ impl Library {
             media: HashMap::new(),
         }
     }
+
+    // Save the current media to the xdg data directory
+    pub fn save(&self, xdg_dirs: BaseDirectories) -> Result<(), Box<dyn Error>> {
+        let file_path = xdg_dirs.place_data_file("library.json").unwrap();
+        let file = File::create(file_path)?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, &self.media)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    // Load media from the xdg data directory if it exists
+    pub fn load(&self) {}
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

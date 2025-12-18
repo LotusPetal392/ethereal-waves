@@ -30,7 +30,7 @@ pub fn footer<'a>(
             widget::column::with_children(vec![
                 widget::layer_container(widget::column::with_children(vec![
                     widget::row::with_children(vec![
-                        widget::text(fl!("updating")).into(),
+                        widget::text(fl!("updating-library")).into(),
                         progress_bar.into(),
                         widget::text(progress_count_display).into(),
                     ])
@@ -72,12 +72,7 @@ pub fn footer<'a>(
                 // Playback progress bar row
                 widget::row::with_children(vec![
                     widget::text(String::from("0:00")).into(),
-                    widget::slider(
-                        0.0..=1000.0,
-                        playback_progress,
-                        Message::PlaybackTimeChanged,
-                    )
-                    .into(),
+                    widget::slider(0.0..=1000.0, playback_progress, Message::TransportSeek).into(),
                     widget::text(String::from("-0:00")).into(),
                 ])
                 .align_y(Alignment::Center)

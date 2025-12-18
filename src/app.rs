@@ -8,6 +8,7 @@ use crate::library::{Library, MediaMetaData};
 use crate::menu::menu_bar;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
+use cosmic::prelude::*;
 use cosmic::theme;
 use cosmic::widget::{
     self,
@@ -20,21 +21,21 @@ use cosmic::{
     cosmic_theme,
     dialog::file_chooser,
     iced::{
-        Alignment, Length, Subscription,
+        Length, Subscription,
         alignment::{Horizontal, Vertical},
         event::{self, Event},
         keyboard::{Event as KeyEvent, Key, Modifiers},
     },
 };
-use cosmic::{iced_futures, prelude::*};
-use futures_util::SinkExt;
 use gstreamer as gst;
 use gstreamer_pbutils as pbutils;
-use std::{collections::HashMap, process, sync::Arc, time::Duration};
+use log::error;
+use std::{collections::HashMap, process, sync::Arc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use url::Url;
 use urlencoding::decode;
 use walkdir::WalkDir;
+use xdg::BaseDirectories;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
@@ -54,14 +55,12 @@ pub struct AppModel {
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// Configuration data that persists between application runs.
     config: Config,
-    /// Time active
-    time: u32,
-    /// Toggle the watch subscription
-    watch_is_active: bool,
     /// Settings page / app theme dropdown labels
     app_theme_labels: Vec<String>,
 
     config_handler: Option<cosmic_config::Config>,
+
+    xdg_dirs: BaseDirectories,
 
     library: Library,
     is_updating: bool,
@@ -78,20 +77,18 @@ pub enum Message {
     Key(Modifiers, Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
-    PlaybackTimeChanged(f32),
     Quit,
     RemoveLibraryPath(String),
     SelectedPaths(Vec<String>),
     ToggleContextPage(ContextPage),
-    ToggleWatch,
     TransportPrevious,
     TransportPlay,
     TransportNext,
+    TransportSeek(f32),
     UpdateComplete(Library),
     UpdateConfig(Config),
     UpdateLibrary,
     UpdateProgress(f32),
-    WatchTick(u32),
 }
 
 /// Create a COSMIC application from the app model
@@ -130,16 +127,6 @@ impl cosmic::Application for AppModel {
             .icon(icon::from_name("applications-science-symbolic"))
             .activate();
 
-        nav.insert()
-            .text(fl!("page-id", num = 2))
-            .data::<Page>(Page::Page2)
-            .icon(icon::from_name("applications-system-symbolic"));
-
-        nav.insert()
-            .text(fl!("page-id", num = 3))
-            .data::<Page>(Page::Page3)
-            .icon(icon::from_name("applications-games-symbolic"));
-
         // Create the about widget
         let about = About::default()
             .name(fl!("app-title"))
@@ -168,10 +155,9 @@ impl cosmic::Application for AppModel {
                     }
                 })
                 .unwrap_or_default(),
-            time: 0,
-            watch_is_active: false,
             app_theme_labels: vec![fl!("match-desktop"), fl!("dark"), fl!("light")],
             config_handler: _flags.config_handler,
+            xdg_dirs: xdg::BaseDirectories::with_prefix("ethereal-waves"),
             library: Library::new(),
             is_updating: false,
             playback_progress: 0.0,
@@ -223,57 +209,11 @@ impl cosmic::Application for AppModel {
         let space_s = cosmic::theme::spacing().space_s;
         let content: Element<_> = match self.nav.active_data::<Page>().unwrap() {
             Page::Page1 => {
-                let header = widget::row::with_capacity(2)
-                    .push(widget::text::title1(fl!("welcome")))
-                    .push(widget::text::title3(fl!("page-id", num = 1)))
-                    .align_y(Alignment::End)
-                    .spacing(space_s);
-
-                let counter_label = ["Watch: ", self.time.to_string().as_str()].concat();
-                let section = cosmic::widget::settings::section().add(
-                    cosmic::widget::settings::item::builder(counter_label).control(
-                        widget::button::text(if self.watch_is_active {
-                            "Stop"
-                        } else {
-                            "Start"
-                        })
-                        .on_press(Message::ToggleWatch),
-                    ),
-                );
-
-                widget::column::with_capacity(2)
-                    .push(header)
-                    .push(section)
-                    .spacing(space_s)
-                    .height(Length::Fill)
-                    .into()
-            }
-
-            Page::Page2 => {
-                let header = widget::row::with_capacity(2)
-                    .push(widget::text::title1(fl!("welcome")))
-                    .push(widget::text::title3(fl!("page-id", num = 2)))
-                    .align_y(Alignment::End)
-                    .spacing(space_s);
+                let header = widget::row::with_capacity(1).push(widget::text(""));
 
                 widget::column::with_capacity(1)
                     .push(header)
                     .spacing(space_s)
-                    .height(Length::Fill)
-                    .into()
-            }
-
-            Page::Page3 => {
-                let header = widget::row::with_capacity(2)
-                    .push(widget::text::title1(fl!("welcome")))
-                    .push(widget::text::title3(fl!("page-id", num = 3)))
-                    .align_y(Alignment::End)
-                    .spacing(space_s);
-
-                widget::column::with_capacity(1)
-                    .push(header)
-                    .spacing(space_s)
-                    .height(Length::Fill)
                     .into()
             }
         };
@@ -296,7 +236,7 @@ impl cosmic::Application for AppModel {
     /// indefinitely.
     fn subscription(&self) -> Subscription<Self::Message> {
         // Add subscriptions which are always active.
-        let mut subscriptions = vec![
+        let subscriptions = vec![
             event::listen_with(|event, _status, _window_id| match event {
                 Event::Keyboard(KeyEvent::KeyPressed { key, modifiers, .. }) => {
                     Some(Message::Key(modifiers, key))
@@ -314,22 +254,6 @@ impl cosmic::Application for AppModel {
                     Message::UpdateConfig(update.config)
                 }),
         ];
-
-        // Conditionally enables a timer that emits a message every second.
-        if self.watch_is_active {
-            subscriptions.push(Subscription::run(|| {
-                iced_futures::stream::channel(1, |mut emitter| async move {
-                    let mut time = 1;
-                    let mut interval = tokio::time::interval(Duration::from_secs(1));
-
-                    loop {
-                        interval.tick().await;
-                        _ = emitter.send(Message::WatchTick(time)).await;
-                        time += 1;
-                    }
-                })
-            }));
-        }
 
         Subscription::batch(subscriptions)
     }
@@ -391,11 +315,6 @@ impl cosmic::Application for AppModel {
                 });
             }
 
-            Message::PlaybackTimeChanged(time) => {
-                self.playback_progress = time;
-                println!("playback time changed: {}", time);
-            }
-
             Message::AppTheme(app_theme) => {
                 config_set!(app_theme, app_theme);
                 return self.update_config();
@@ -442,10 +361,6 @@ impl cosmic::Application for AppModel {
                 config_set!(library_paths, library_paths);
             }
 
-            Message::ToggleWatch => {
-                self.watch_is_active = !self.watch_is_active;
-            }
-
             Message::ToggleContextPage(context_page) => {
                 if self.context_page == context_page {
                     // Close the context drawer if the toggled context page is the same.
@@ -469,8 +384,17 @@ impl cosmic::Application for AppModel {
                 println!("Next")
             }
 
+            Message::TransportSeek(time) => {
+                self.playback_progress = time;
+                println!("playback time changed: {}", time);
+            }
+
             Message::UpdateComplete(library) => {
                 self.library = library;
+                match self.library.save(self.xdg_dirs.clone()) {
+                    Ok(_) => {}
+                    Err(e) => error!("There was an error saving library data: {e}"),
+                };
                 self.is_updating = false;
             }
 
@@ -608,10 +532,6 @@ impl cosmic::Application for AppModel {
                     .map(cosmic::Action::App);
             }
 
-            Message::WatchTick(time) => {
-                self.time = time;
-            }
-
             Message::UpdateProgress(progress) => {
                 self.update_progress = progress;
             }
@@ -728,8 +648,6 @@ pub struct Flags {
 /// The page to display in the application.
 pub enum Page {
     Page1,
-    Page2,
-    Page3,
 }
 
 /// The context page to display in the context drawer.

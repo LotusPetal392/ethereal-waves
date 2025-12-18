@@ -1492,11 +1492,13 @@ dependencies = [
  "paste",
  "rust-embed",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "url",
  "urlencoding",
  "walkdir",
+ "xdg",
 ]
 
 [[package]]
