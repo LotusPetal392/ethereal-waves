@@ -122,9 +122,9 @@ impl cosmic::Application for AppModel {
         let mut nav = nav_bar::Model::default();
 
         nav.insert()
-            .text(fl!("page-id", num = 1))
+            .text(fl!("library"))
             .data::<Page>(Page::Page1)
-            .icon(icon::from_name("applications-science-symbolic"))
+            .icon(icon::from_name("folder-music-symbolic"))
             .activate();
 
         // Create the about widget
@@ -146,13 +146,7 @@ impl cosmic::Application for AppModel {
             config: cosmic_config::Config::new(Self::APP_ID, CONFIG_VERSION)
                 .map(|context| match Config::get_entry(&context) {
                     Ok(config) => config,
-                    Err((_errors, config)) => {
-                        // for why in errors {
-                        //     tracing::error!(%why, "error loading app config");
-                        // }
-
-                        config
-                    }
+                    Err((_errors, config)) => config,
                 })
                 .unwrap_or_default(),
             app_theme_labels: vec![fl!("match-desktop"), fl!("dark"), fl!("light")],
@@ -509,6 +503,27 @@ impl cosmic::Application for AppModel {
                             if let Some(duration) = info.duration() {
                                 track_metadata.duration = Some(duration.seconds());
                             }
+                            // Encoder
+                            track_metadata.encoder =
+                                tags.get::<gst::tags::Encoder>().map(|t| t.get().to_owned());
+                            // Comment
+                            track_metadata.comment =
+                                tags.get::<gst::tags::Comment>().map(|t| t.get().to_owned());
+                            // Extended Comment
+                            track_metadata.extended_comment = tags
+                                .get::<gst::tags::ExtendedComment>()
+                                .map(|t| t.get().to_owned());
+                            // Audio Codec
+                            track_metadata.audio_codec = tags
+                                .get::<gst::tags::AudioCodec>()
+                                .map(|t| t.get().to_owned());
+                            // Bitrate
+                            track_metadata.bitrate =
+                                tags.get::<gst::tags::Bitrate>().map(|t| t.get().to_owned());
+                            // Container Format
+                            track_metadata.container_format = tags
+                                .get::<gst::tags::ContainerFormat>()
+                                .map(|t| t.get().to_owned());
                         } else {
                             // If there's no metadata just fill in the filename
                             track_metadata.title = Some(file.to_string_lossy().to_string());
