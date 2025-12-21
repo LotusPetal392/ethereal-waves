@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use xdg::BaseDirectories;
@@ -30,11 +30,21 @@ impl Library {
     }
 
     // Load media from the xdg data directory if it exists
-    pub fn load(&self) {}
+    pub fn load(
+        &self,
+        xdg_dirs: BaseDirectories,
+    ) -> Result<HashMap<PathBuf, MediaMetaData>, Box<dyn Error>> {
+        let file_path = xdg_dirs.get_data_file("library.json").unwrap();
+        let data = fs::read_to_string(file_path)?;
+        let json: HashMap<PathBuf, MediaMetaData> = serde_json::from_str(&data)?;
+
+        Ok(json)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaMetaData {
+    pub id: Option<String>,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
@@ -56,6 +66,7 @@ pub struct MediaMetaData {
 impl MediaMetaData {
     pub fn new() -> Self {
         Self {
+            id: None,
             title: None,
             artist: None,
             album: None,

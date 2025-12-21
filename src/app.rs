@@ -6,8 +6,11 @@ use crate::footer::footer;
 use crate::key_bind::key_binds;
 use crate::library::{Library, MediaMetaData};
 use crate::menu::menu_bar;
+use crate::page::empty_library;
+use crate::page::list_view;
 use cosmic::app::context_drawer;
 use cosmic::cosmic_config::{self, CosmicConfigEntry};
+use cosmic::iced::Alignment;
 use cosmic::prelude::*;
 use cosmic::theme;
 use cosmic::widget::{
@@ -30,7 +33,8 @@ use cosmic::{
 use gstreamer as gst;
 use gstreamer_pbutils as pbutils;
 use log::error;
-use std::{collections::HashMap, process, sync::Arc};
+use sha256::digest;
+use std::{collections::HashMap, path::PathBuf, process, sync::Arc};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use url::Url;
 use urlencoding::decode;
@@ -66,6 +70,9 @@ pub struct AppModel {
     is_updating: bool,
     playback_progress: f32,
     update_progress: f32,
+    update_total: f32,
+    update_percent: f32,
+    volume: f32,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -74,6 +81,7 @@ pub enum Message {
     AddLibraryDialog,
     AppTheme(AppTheme),
     Cancelled,
+    ChangeTrack(String),
     Key(Modifiers, Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
@@ -88,7 +96,8 @@ pub enum Message {
     UpdateComplete(Library),
     UpdateConfig(Config),
     UpdateLibrary,
-    UpdateProgress(f32),
+    UpdateProgress(f32, f32, f32),
+    VolumeChanged(f32),
 }
 
 /// Create a COSMIC application from the app model
@@ -123,7 +132,7 @@ impl cosmic::Application for AppModel {
 
         nav.insert()
             .text(fl!("library"))
-            .data::<Page>(Page::Page1)
+            .data::<Page>(Page::Library)
             .icon(icon::from_name("folder-music-symbolic"))
             .activate();
 
@@ -156,6 +165,18 @@ impl cosmic::Application for AppModel {
             is_updating: false,
             playback_progress: 0.0,
             update_progress: 0.0,
+            update_total: 0.0,
+            update_percent: 0.0,
+            volume: 100.0,
+        };
+
+        app.library.media = match app.library.load(app.xdg_dirs.clone()) {
+            Ok(library) => library,
+            Err(error) => {
+                println!("Can't open library: {:?}", error);
+                let library: HashMap<PathBuf, MediaMetaData> = HashMap::new();
+                library
+            }
         };
 
         // Create a startup command that sets the window title.
@@ -200,25 +221,22 @@ impl cosmic::Application for AppModel {
     /// Application events will be processed through the view. Any messages emitted by
     /// events received by widgets will be passed to the update method.
     fn view(&self) -> Element<'_, Self::Message> {
-        let space_s = cosmic::theme::spacing().space_s;
         let content: Element<_> = match self.nav.active_data::<Page>().unwrap() {
-            Page::Page1 => {
-                let header = widget::row::with_capacity(1).push(widget::text(""));
-
-                widget::column::with_capacity(1)
-                    .push(header)
-                    .spacing(space_s)
-                    .into()
+            Page::Library => {
+                if self.library.media.len() == 0 {
+                    empty_library::content()
+                } else {
+                    list_view::content(&self.library)
+                }
             }
         };
 
-        widget::container(content)
-            .width(600)
-            .height(Length::Fill)
+        widget::container(widget::column::with_children(vec![content]))
             .apply(widget::container)
+            .height(Length::Fill)
             .width(Length::Fill)
             .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
+            .align_y(Vertical::Top)
             .into()
     }
 
@@ -288,7 +306,7 @@ impl cosmic::Application for AppModel {
         match message {
             Message::AddLibraryDialog => {
                 return cosmic::task::future(async move {
-                    let dialog = file_chooser::open::Dialog::new().title(fl!("add-new-location"));
+                    let dialog = file_chooser::open::Dialog::new().title(fl!("add-location"));
 
                     match dialog.open_folders().await {
                         Ok(response) => {
@@ -315,6 +333,17 @@ impl cosmic::Application for AppModel {
             }
 
             Message::Cancelled => {}
+
+            Message::ChangeTrack(id) => {
+                println!("Change track: {:?}", id);
+                println!(
+                    "{:?}",
+                    self.library
+                        .media
+                        .iter()
+                        .find(|(_, v)| v.id == Some(id.clone()))
+                );
+            }
 
             Message::Key(modifiers, key) => {
                 for (key_bind, action) in self.key_binds.iter() {
@@ -465,6 +494,8 @@ impl cosmic::Application for AppModel {
                             .discover_uri(&uri.as_str())
                             .expect("Cannot read file.");
 
+                        track_metadata.id = Some(digest(file_str));
+
                         // Read tags
                         if let Some(tags) = info.tags() {
                             // Title
@@ -533,11 +564,15 @@ impl cosmic::Application for AppModel {
                         update_progress = update_progress + 1.0;
                         if update_percent_old != (update_progress / update_total * 100.0).round() {
                             _ = tx.send(Message::UpdateProgress(
+                                update_progress,
+                                update_total,
                                 (update_progress / update_total * 100.0).round(),
                             ));
                         }
                         update_percent_old = (update_progress / update_total * 100.0).round();
                     });
+
+                    _ = tx.send(Message::UpdateProgress(update_total, update_total, 100.0));
 
                     std::thread::sleep(tokio::time::Duration::from_secs(1));
                     _ = tx.send(Message::UpdateComplete(library));
@@ -547,8 +582,14 @@ impl cosmic::Application for AppModel {
                     .map(cosmic::Action::App);
             }
 
-            Message::UpdateProgress(progress) => {
-                self.update_progress = progress;
+            Message::UpdateProgress(update_progress, update_total, percent) => {
+                self.update_progress = update_progress;
+                self.update_total = update_total;
+                self.update_percent = percent;
+            }
+
+            Message::VolumeChanged(volume) => {
+                self.volume = volume;
             }
         }
         Task::none()
@@ -569,6 +610,9 @@ impl cosmic::Application for AppModel {
                 self.is_updating,
                 self.playback_progress,
                 self.update_progress,
+                self.update_total,
+                self.update_percent,
+                self.volume,
             )
             .into(),
         )
@@ -602,7 +646,25 @@ impl AppModel {
 
         let mut library_column = widget::column();
         library_column = library_column.push(
-            widget::button::text(fl!("add-new-location")).on_press(Message::AddLibraryDialog),
+            widget::row::with_children(vec![
+                widget::column::with_children(vec![
+                    widget::button::text(fl!("add-location"))
+                        .on_press(Message::AddLibraryDialog)
+                        .into(),
+                ])
+                .width(Length::FillPortion(1))
+                .align_x(Alignment::Start)
+                .into(),
+                widget::column::with_children(vec![
+                    widget::button::text(fl!("update-library"))
+                        .on_press(Message::UpdateLibrary)
+                        .into(),
+                ])
+                .width(Length::FillPortion(1))
+                .align_x(Alignment::End)
+                .into(),
+            ])
+            .width(Length::Fill),
         );
 
         let library_paths_length = self.config.library_paths.len() - 1;
@@ -662,7 +724,7 @@ pub struct Flags {
 
 /// The page to display in the application.
 pub enum Page {
-    Page1,
+    Library,
 }
 
 /// The context page to display in the context drawer.

@@ -11,10 +11,17 @@ settings = Settings
 appearance = Appearance
 theme = Theme
 library = Library
-add-new-location = Add New Location
+add-location = Add Location
 update-library = Update Library
 updating-library = Updating Library
 
 match-desktop = Match Desktop
 dark = Dark
 light = Light
+
+number = #
+title = Title
+album = Album
+artist = Artist
+
+add-music = Go to View / Settings / Library to add music. Then update your library!

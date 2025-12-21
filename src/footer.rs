@@ -1,7 +1,7 @@
 use crate::app::Message;
 use crate::fl;
 use cosmic::{
-    cosmic_theme,
+    Theme, cosmic_theme,
     iced::{Alignment, Length},
     theme, widget,
 };
@@ -10,7 +10,10 @@ pub fn footer<'a>(
     is_updating: bool,
     playback_progress: f32,
     update_progress: f32,
-) -> cosmic::widget::Container<'a, Message, cosmic::Theme> {
+    update_total: f32,
+    update_percent: f32,
+    volume: f32,
+) -> cosmic::widget::Container<'a, Message, Theme> {
     let cosmic_theme::Spacing {
         space_xxs,
         space_xs,
@@ -21,8 +24,11 @@ pub fn footer<'a>(
 
     let progress_bar_height = Length::Fixed(4.0);
     let progress_bar =
-        widget::progress_bar(0.0..=100.0, update_progress).height(progress_bar_height);
-    let progress_count_display = format!("{:.0}%", update_progress,);
+        widget::progress_bar(0.0..=100.0, update_percent).height(progress_bar_height);
+    let progress_count_display = format!(
+        "{}/{} ({:.0}%)",
+        update_progress, update_total, update_percent
+    );
     let updating_label = fl!("updating-library");
 
     widget::container(widget::column::with_children(vec![
@@ -33,7 +39,7 @@ pub fn footer<'a>(
                 widget::column::with_children(vec![
                     widget::row::with_children(vec![progress_bar.into()]).into(),
                     widget::row::with_children(vec![
-                        widget::text(format!("{updating_label} ({progress_count_display})..."))
+                        widget::text(format!("{updating_label} {progress_count_display}..."))
                             .into(),
                     ])
                     .into(),
@@ -122,9 +128,22 @@ pub fn footer<'a>(
                 .width(Length::FillPortion(2))
                 .into(),
                 // Right column
-                widget::column::with_capacity(0)
-                    .width(Length::FillPortion(1))
+                widget::column::with_children(vec![
+                    widget::row::with_capacity(0)
+                        .width(Length::FillPortion(1))
+                        .into(),
+                    widget::row::with_children(vec![
+                        widget::slider(0.0..=100.0, volume, Message::VolumeChanged).into(),
+                    ])
+                    .align_y(Alignment::Center)
+                    .spacing(space_xs)
+                    .width(Length::FillPortion(2))
                     .into(),
+                ])
+                .align_x(Alignment::Center)
+                .padding(space_xs)
+                .width(Length::FillPortion(1))
+                .into(),
             ])
             .into(),
         ]))

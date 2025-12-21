@@ -7,6 +7,7 @@ mod i18n;
 mod key_bind;
 mod library;
 mod menu;
+mod page;
 
 use app::Flags;
 use config::Config;
