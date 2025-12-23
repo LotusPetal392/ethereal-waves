@@ -8,33 +8,34 @@ use crate::library::{Library, MediaMetaData};
 use crate::menu::menu_bar;
 use crate::page::empty_library;
 use crate::page::list_view;
+use crate::player::Player;
 use cosmic::app::context_drawer;
-use cosmic::cosmic_config::{self, CosmicConfigEntry};
-use cosmic::iced::Alignment;
 use cosmic::prelude::*;
-use cosmic::theme;
-use cosmic::widget::{
-    self,
-    about::About,
-    icon,
-    menu::{self, Action},
-    nav_bar,
-};
 use cosmic::{
+    cosmic_config::{self, CosmicConfigEntry},
     cosmic_theme,
     dialog::file_chooser,
     iced::{
-        Length, Subscription,
+        self, Alignment, Length, Subscription,
         alignment::{Horizontal, Vertical},
         event::{self, Event},
         keyboard::{Event as KeyEvent, Key, Modifiers},
     },
+    theme,
+    widget::{
+        self,
+        about::About,
+        icon,
+        menu::{self, Action},
+        nav_bar,
+    },
 };
+use gst::prelude::ElementExt;
+use gst::prelude::ElementExtManual;
 use gstreamer as gst;
 use gstreamer_pbutils as pbutils;
-use log::error;
 use sha256::digest;
-use std::{collections::HashMap, path::PathBuf, process, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, process, sync::Arc, time::Duration};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use url::Url;
 use urlencoding::decode;
@@ -67,12 +68,17 @@ pub struct AppModel {
     xdg_dirs: BaseDirectories,
 
     library: Library,
-    is_updating: bool,
-    playback_progress: f32,
-    update_progress: f32,
-    update_total: f32,
-    update_percent: f32,
-    volume: f32,
+    pub is_updating: bool,
+    pub playback_progress: f32,
+    pub update_progress: f32,
+    pub update_total: f32,
+    pub update_percent: f32,
+
+    dragging_slider: bool,
+
+    player: Player,
+
+    pub now_playing: Option<MediaMetaData>,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -85,19 +91,20 @@ pub enum Message {
     Key(Modifiers, Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
+    Next,
+    Previous,
     Quit,
+    ReleaseSlider,
     RemoveLibraryPath(String),
     SelectedPaths(Vec<String>),
+    SliderSeek(f32),
+    Tick,
     ToggleContextPage(ContextPage),
-    TransportPrevious,
-    TransportPlay,
-    TransportNext,
-    TransportSeek(f32),
+    TogglePlaying,
     UpdateComplete(Library),
     UpdateConfig(Config),
     UpdateLibrary,
     UpdateProgress(f32, f32, f32),
-    VolumeChanged(f32),
 }
 
 /// Create a COSMIC application from the app model
@@ -167,13 +174,15 @@ impl cosmic::Application for AppModel {
             update_progress: 0.0,
             update_total: 0.0,
             update_percent: 0.0,
-            volume: 100.0,
+            dragging_slider: false,
+            player: Player::new(),
+            now_playing: None,
         };
 
         app.library.media = match app.library.load(app.xdg_dirs.clone()) {
             Ok(library) => library,
             Err(error) => {
-                println!("Can't open library: {:?}", error);
+                eprintln!("Can't open library: {:?}", error);
                 let library: HashMap<PathBuf, MediaMetaData> = HashMap::new();
                 library
             }
@@ -248,7 +257,7 @@ impl cosmic::Application for AppModel {
     /// indefinitely.
     fn subscription(&self) -> Subscription<Self::Message> {
         // Add subscriptions which are always active.
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             event::listen_with(|event, _status, _window_id| match event {
                 Event::Keyboard(KeyEvent::KeyPressed { key, modifiers, .. }) => {
                     Some(Message::Key(modifiers, key))
@@ -266,6 +275,11 @@ impl cosmic::Application for AppModel {
                     Message::UpdateConfig(update.config)
                 }),
         ];
+
+        if self.now_playing.is_some() {
+            subscriptions
+                .push(iced::time::every(Duration::from_millis(100)).map(|_| Message::Tick));
+        }
 
         Subscription::batch(subscriptions)
     }
@@ -335,14 +349,15 @@ impl cosmic::Application for AppModel {
             Message::Cancelled => {}
 
             Message::ChangeTrack(id) => {
-                println!("Change track: {:?}", id);
-                println!(
-                    "{:?}",
-                    self.library
-                        .media
-                        .iter()
-                        .find(|(_, v)| v.id == Some(id.clone()))
-                );
+                let (path, media) = self.library.from_id(id).unwrap();
+                let uri = Url::from_file_path(path).unwrap();
+                println!("{}", uri);
+
+                self.player.stop();
+                self.now_playing = Some(media.clone());
+                self.player.load(uri.as_str());
+                self.player.play();
+                println!("Change track: {:?}", media.title);
             }
 
             Message::Key(modifiers, key) => {
@@ -354,7 +369,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::LibraryPathOpenError(why) => {
-                log::error!("{why}");
+                eprintln!("{why}");
             }
 
             Message::LaunchUrl(url) => match open::that_detached(&url) {
@@ -364,8 +379,28 @@ impl cosmic::Application for AppModel {
                 }
             },
 
+            Message::Next => {
+                println!("Next");
+            }
+
+            Message::Previous => {
+                println!("Previous")
+            }
+
             Message::Quit => {
+                self.player.stop();
                 process::exit(0);
+            }
+
+            Message::ReleaseSlider => {
+                self.dragging_slider = false;
+                self.player
+                    .pipeline
+                    .seek_simple(
+                        gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                        gst::ClockTime::from_seconds(self.playback_progress as u64),
+                    )
+                    .unwrap();
             }
 
             Message::RemoveLibraryPath(path) => {
@@ -384,6 +419,38 @@ impl cosmic::Application for AppModel {
                 config_set!(library_paths, library_paths);
             }
 
+            Message::SliderSeek(time) => {
+                self.dragging_slider = true;
+                self.playback_progress = time;
+
+                println!("playback time changed: {}", time);
+            }
+
+            Message::Tick => {
+                // Handle GStreamer messages
+                let bus = self.player.pipeline.bus().unwrap();
+                while let Some(msg) = bus.pop() {
+                    use gst::MessageView;
+                    match msg.view() {
+                        MessageView::Eos(..) => {
+                            println!("End of stream.");
+                            return self.update(Message::Next);
+                        }
+                        MessageView::Error(err) => {
+                            eprintln!("Error: {}", err.error());
+                            return self.update(Message::Next);
+                        }
+                        _ => (),
+                    }
+                }
+
+                if !self.dragging_slider {
+                    if let Some(pos) = self.player.pipeline.query_position::<gst::ClockTime>() {
+                        self.playback_progress = pos.mseconds() as f32 / 1000.0;
+                    }
+                }
+            }
+
             Message::ToggleContextPage(context_page) => {
                 if self.context_page == context_page {
                     // Close the context drawer if the toggled context page is the same.
@@ -395,28 +462,15 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::TransportPrevious => {
-                println!("Previous")
-            }
-
-            Message::TransportPlay => {
+            Message::TogglePlaying => {
                 println!("Play/Pause")
-            }
-
-            Message::TransportNext => {
-                println!("Next")
-            }
-
-            Message::TransportSeek(time) => {
-                self.playback_progress = time;
-                println!("playback time changed: {}", time);
             }
 
             Message::UpdateComplete(library) => {
                 self.library = library;
                 match self.library.save(self.xdg_dirs.clone()) {
                     Ok(_) => {}
-                    Err(e) => error!("There was an error saving library data: {e}"),
+                    Err(e) => eprintln!("There was an error saving library data: {e}"),
                 };
                 self.is_updating = false;
             }
@@ -532,7 +586,7 @@ impl cosmic::Application for AppModel {
                                 .map(|t| t.get().to_owned());
                             // Duration
                             if let Some(duration) = info.duration() {
-                                track_metadata.duration = Some(duration.seconds());
+                                track_metadata.duration = Some(duration.seconds() as f32);
                             }
                             // Encoder
                             track_metadata.encoder =
@@ -548,9 +602,6 @@ impl cosmic::Application for AppModel {
                             track_metadata.audio_codec = tags
                                 .get::<gst::tags::AudioCodec>()
                                 .map(|t| t.get().to_owned());
-                            // Bitrate
-                            track_metadata.bitrate =
-                                tags.get::<gst::tags::Bitrate>().map(|t| t.get().to_owned());
                             // Container Format
                             track_metadata.container_format = tags
                                 .get::<gst::tags::ContainerFormat>()
@@ -587,10 +638,6 @@ impl cosmic::Application for AppModel {
                 self.update_total = update_total;
                 self.update_percent = percent;
             }
-
-            Message::VolumeChanged(volume) => {
-                self.volume = volume;
-            }
         }
         Task::none()
     }
@@ -605,17 +652,7 @@ impl cosmic::Application for AppModel {
 
     /// Footer area
     fn footer(&self) -> Option<Element<'_, Message>> {
-        Some(
-            footer(
-                self.is_updating,
-                self.playback_progress,
-                self.update_progress,
-                self.update_total,
-                self.update_percent,
-                self.volume,
-            )
-            .into(),
-        )
+        Some(footer(self).into())
     }
 }
 
@@ -636,6 +673,7 @@ impl AppModel {
         }
     }
 
+    /// Settings page content
     fn settings(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
         let app_theme_selected = match self.config.app_theme {
@@ -711,6 +749,7 @@ impl AppModel {
         .into()
     }
 
+    /// Updates the cosmic config, in particular the theme
     fn update_config(&mut self) -> Task<cosmic::Action<Message>> {
         cosmic::command::set_theme(self.config.app_theme.theme())
     }

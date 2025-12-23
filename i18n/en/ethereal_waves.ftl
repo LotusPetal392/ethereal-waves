@@ -24,4 +24,5 @@ title = Title
 album = Album
 artist = Artist
 
-add-music = Go to View / Settings / Library to add music. Then update your library!
+go-to-view = Go to View /
+then-update-library =  / Library to add music. Then update your library!

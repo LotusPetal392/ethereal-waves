@@ -40,6 +40,13 @@ impl Library {
 
         Ok(json)
     }
+
+    pub fn from_id(&self, id: String) -> Option<(&PathBuf, &MediaMetaData)> {
+        if let Some(entry) = self.media.iter().find(|(_, v)| v.id == Some(id.clone())) {
+            return Some(entry);
+        }
+        None
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,12 +61,11 @@ pub struct MediaMetaData {
     pub album_disc_count: Option<u32>,
     pub track_number: Option<u32>,
     pub track_count: Option<u32>,
-    pub duration: Option<u64>,
+    pub duration: Option<f32>,
     pub encoder: Option<String>,
     pub comment: Option<String>,
     pub extended_comment: Option<String>,
     pub audio_codec: Option<String>,
-    pub bitrate: Option<u32>,
     pub container_format: Option<String>,
 }
 
@@ -81,7 +87,6 @@ impl MediaMetaData {
             comment: None,
             extended_comment: None,
             audio_codec: None,
-            bitrate: None,
             container_format: None,
         }
     }

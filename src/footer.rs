@@ -1,19 +1,13 @@
-use crate::app::Message;
+use crate::app::{AppModel, Message};
 use crate::fl;
+use crate::library::MediaMetaData;
 use cosmic::{
     Theme, cosmic_theme,
     iced::{Alignment, Length},
     theme, widget,
 };
 
-pub fn footer<'a>(
-    is_updating: bool,
-    playback_progress: f32,
-    update_progress: f32,
-    update_total: f32,
-    update_percent: f32,
-    volume: f32,
-) -> cosmic::widget::Container<'a, Message, Theme> {
+pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Theme> {
     let cosmic_theme::Spacing {
         space_xxs,
         space_xs,
@@ -24,18 +18,20 @@ pub fn footer<'a>(
 
     let progress_bar_height = Length::Fixed(4.0);
     let progress_bar =
-        widget::progress_bar(0.0..=100.0, update_percent).height(progress_bar_height);
+        widget::progress_bar(0.0..=100.0, app.update_percent).height(progress_bar_height);
     let progress_count_display = format!(
         "{}/{} ({:.0}%)",
-        update_progress, update_total, update_percent
+        app.update_progress, app.update_total, app.update_percent
     );
     let updating_label = fl!("updating-library");
+    let now_playing = app.now_playing.clone().unwrap_or(MediaMetaData::new());
+    let duration: f32 = now_playing.duration.unwrap_or(0.0);
 
     widget::container(widget::column::with_children(vec![
         // Footer
         widget::layer_container(widget::column::with_children(vec![
             // Update Row
-            if is_updating {
+            if app.is_updating {
                 widget::column::with_children(vec![
                     widget::row::with_children(vec![progress_bar.into()]).into(),
                     widget::row::with_children(vec![
@@ -62,9 +58,9 @@ pub fn footer<'a>(
                         .height(Length::Fixed(64.0))
                         .into(),
                         widget::column::with_children(vec![
-                            widget::text("Title").into(),
-                            widget::text("Album").into(),
-                            widget::text("Artist").into(),
+                            widget::text(now_playing.title.unwrap_or(String::new())).into(),
+                            widget::text(now_playing.album.unwrap_or(String::new())).into(),
+                            widget::text(now_playing.artist.unwrap_or(String::new())).into(),
                         ])
                         .into(),
                     ])
@@ -79,7 +75,8 @@ pub fn footer<'a>(
                     // Playback progress bar row
                     widget::row::with_children(vec![
                         widget::text(String::from("0:00")).into(),
-                        widget::slider(0.0..=1000.0, playback_progress, Message::TransportSeek)
+                        widget::slider(0.0..=duration, app.playback_progress, Message::SliderSeek)
+                            .on_release(Message::ReleaseSlider)
                             .into(),
                         widget::text(String::from("-0:00")).into(),
                     ])
@@ -95,21 +92,21 @@ pub fn footer<'a>(
                                 widget::button::icon(widget::icon::from_name(
                                     "media-skip-backward-symbolic",
                                 ))
-                                .on_press(Message::TransportPrevious)
+                                .on_press(Message::Previous)
                                 .padding(space_xs)
                                 .icon_size(space_m)
                                 .into(),
                                 widget::button::icon(widget::icon::from_name(
                                     "media-playback-start-symbolic",
                                 ))
-                                .on_press(Message::TransportPlay)
+                                .on_press(Message::TogglePlaying)
                                 .padding(space_xs)
                                 .icon_size(space_l)
                                 .into(),
                                 widget::button::icon(widget::icon::from_name(
                                     "media-skip-forward-symbolic",
                                 ))
-                                .on_press(Message::TransportNext)
+                                .on_press(Message::Next)
                                 .padding(space_xs)
                                 .icon_size(space_m)
                                 .into(),
@@ -128,22 +125,11 @@ pub fn footer<'a>(
                 .width(Length::FillPortion(2))
                 .into(),
                 // Right column
-                widget::column::with_children(vec![
-                    widget::row::with_capacity(0)
-                        .width(Length::FillPortion(1))
-                        .into(),
-                    widget::row::with_children(vec![
-                        widget::slider(0.0..=100.0, volume, Message::VolumeChanged).into(),
-                    ])
-                    .align_y(Alignment::Center)
-                    .spacing(space_xs)
-                    .width(Length::FillPortion(2))
+                widget::column::with_children(vec![])
+                    .align_x(Alignment::Center)
+                    .padding(space_xs)
+                    .width(Length::FillPortion(1))
                     .into(),
-                ])
-                .align_x(Alignment::Center)
-                .padding(space_xs)
-                .width(Length::FillPortion(1))
-                .into(),
             ])
             .into(),
         ]))
