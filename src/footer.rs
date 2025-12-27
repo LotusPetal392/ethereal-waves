@@ -74,11 +74,11 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
                 widget::column::with_children(vec![
                     // Playback progress bar row
                     widget::row::with_children(vec![
-                        widget::text(String::from("0:00")).into(),
+                        widget::text(app.display_playback_progress()).into(),
                         widget::slider(0.0..=duration, app.playback_progress, Message::SliderSeek)
                             .on_release(Message::ReleaseSlider)
                             .into(),
-                        widget::text(String::from("-0:00")).into(),
+                        widget::text(app.display_time_left()).into(),
                     ])
                     .align_y(Alignment::Center)
                     .padding(space_xxs)

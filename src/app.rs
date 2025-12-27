@@ -753,6 +753,36 @@ impl AppModel {
     fn update_config(&mut self) -> Task<cosmic::Action<Message>> {
         cosmic::command::set_theme(self.config.app_theme.theme())
     }
+
+    /// Calculate the playback time
+    pub fn display_playback_progress(&self) -> String {
+        let minutes = (self.playback_progress / 60.0) as u32;
+        let seconds = f32::trunc(self.playback_progress) as u32 - (minutes * 60);
+        let value = format!("{}:{:02}", minutes, seconds);
+        value
+    }
+
+    pub fn display_time_left(&self) -> String {
+        if self.now_playing.is_some() {
+            let now_playing = self.now_playing.clone().unwrap();
+            let duration = now_playing.duration.unwrap_or(0.0);
+
+            let mut time_left = duration - self.playback_progress;
+            if time_left < 0.0 {
+                time_left = 0.0;
+            }
+            if time_left > duration {
+                time_left = duration;
+            }
+
+            let minutes = (time_left / 60.0) as u32;
+            let seconds = f32::trunc(time_left) as u32 - (minutes * 60);
+
+            return format!("-{}:{:02}", minutes, seconds);
+        }
+
+        String::from("-0.00")
+    }
 }
 
 /// Flags passed into the app
