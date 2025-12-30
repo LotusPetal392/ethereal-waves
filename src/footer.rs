@@ -14,6 +14,7 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
         space_xs,
         space_m,
         space_l,
+        space_xl,
         ..
     } = theme::active().cosmic().spacing;
 
@@ -59,8 +60,8 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
                     widget::row::with_children(vec![
                         if bytes.is_some() {
                             widget::image(image::Handle::from_bytes(bytes.unwrap().clone()))
-                                .width(Length::Fixed(64.0))
-                                .height(Length::Fixed(64.0))
+                                .height(space_xl * 2)
+                                .width(space_xl * 2)
                                 .into()
                         } else {
                             widget::icon(widget::icon::from_svg_bytes(include_bytes!(

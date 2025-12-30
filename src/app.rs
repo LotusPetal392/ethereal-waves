@@ -375,17 +375,19 @@ impl cosmic::Application for AppModel {
                 self.player.load(uri.as_str());
                 self.player.play();
 
-                let filename: String = media_metadata.clone().artwork_filename.unwrap();
+                if media_metadata.artwork_filename.is_some() {
+                    let filename = media_metadata.artwork_filename.clone().unwrap();
 
-                let bytes = match self.load_artwork(&filename) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        eprintln!("Failed to load album artwork: {:?}", error);
-                        Vec::new()
+                    let bytes = match self.load_artwork(&filename) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            eprintln!("Failed to load album artwork: {:?}", error);
+                            Vec::new()
+                        }
+                    };
+                    if bytes.len() > 0 {
+                        self.album_artwork.insert(filename, bytes);
                     }
-                };
-                if bytes.len() > 0 {
-                    self.album_artwork.insert(filename, bytes);
                 }
 
                 println!("Change track: {:?}", media_metadata.title);
