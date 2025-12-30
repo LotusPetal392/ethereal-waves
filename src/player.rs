@@ -2,7 +2,7 @@
 //use cosmic::iced::Subscription;
 //use cosmic::iced::futures::{self, SinkExt, channel::mpsc::Sender};
 use gst::prelude::*;
-use gstreamer as gst;
+use gstreamer::{self as gst};
 //use std::sync::mpsc::Receiver;
 
 pub struct Player {

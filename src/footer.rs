@@ -1,6 +1,7 @@
 use crate::app::{AppModel, Message};
 use crate::fl;
 use crate::library::MediaMetaData;
+use cosmic::widget::image;
 use cosmic::{
     Theme, cosmic_theme,
     iced::{Alignment, Length},
@@ -25,7 +26,12 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
     );
     let updating_label = fl!("updating-library");
     let now_playing = app.now_playing.clone().unwrap_or(MediaMetaData::new());
+    let filename = match now_playing.artwork_filename {
+        Some(filename) => filename,
+        None => String::new(),
+    };
     let duration: f32 = now_playing.duration.unwrap_or(0.0);
+    let bytes: Option<&Vec<u8>> = app.get_artwork(filename);
 
     widget::container(widget::column::with_children(vec![
         // Footer
@@ -51,12 +57,19 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
                 // Left column
                 widget::column::with_children(vec![
                     widget::row::with_children(vec![
-                        widget::icon(widget::icon::from_svg_bytes(include_bytes!(
-                            "../resources/icons/hicolor/scalable/note.svg"
-                        )))
-                        .width(Length::Fixed(64.0))
-                        .height(Length::Fixed(64.0))
-                        .into(),
+                        if bytes.is_some() {
+                            widget::image(image::Handle::from_bytes(bytes.unwrap().clone()))
+                                .width(Length::Fixed(64.0))
+                                .height(Length::Fixed(64.0))
+                                .into()
+                        } else {
+                            widget::icon(widget::icon::from_svg_bytes(include_bytes!(
+                                "../resources/icons/hicolor/scalable/note.svg"
+                            )))
+                            .width(Length::Fixed(64.0))
+                            .height(Length::Fixed(64.0))
+                            .into()
+                        },
                         widget::column::with_children(vec![
                             widget::text(now_playing.title.unwrap_or(String::new())).into(),
                             widget::text(now_playing.album.unwrap_or(String::new())).into(),
@@ -87,33 +100,26 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
                     // Playback control row
                     widget::row::with_children(vec![
                         widget::column::with_capacity(0).width(Length::Fill).into(),
-                        widget::column::with_children(vec![
-                            widget::row::with_children(vec![
-                                widget::button::icon(widget::icon::from_name(
-                                    "media-skip-backward-symbolic",
-                                ))
-                                .on_press(Message::Previous)
-                                .padding(space_xs)
-                                .icon_size(space_m)
-                                .into(),
-                                widget::button::icon(widget::icon::from_name(
-                                    "media-playback-start-symbolic",
-                                ))
-                                .on_press(Message::TogglePlaying)
-                                .padding(space_xs)
-                                .icon_size(space_l)
-                                .into(),
-                                widget::button::icon(widget::icon::from_name(
-                                    "media-skip-forward-symbolic",
-                                ))
-                                .on_press(Message::Next)
-                                .padding(space_xs)
-                                .icon_size(space_m)
-                                .into(),
-                            ])
-                            .align_y(Alignment::Center)
-                            .into(),
-                        ])
+                        widget::button::icon(widget::icon::from_name(
+                            "media-skip-backward-symbolic",
+                        ))
+                        .on_press(Message::Previous)
+                        .padding(space_xs)
+                        .icon_size(space_m)
+                        .into(),
+                        widget::button::icon(widget::icon::from_name(
+                            "media-playback-start-symbolic",
+                        ))
+                        .on_press(Message::TogglePlaying)
+                        .padding(space_xs)
+                        .icon_size(space_l)
+                        .into(),
+                        widget::button::icon(widget::icon::from_name(
+                            "media-skip-forward-symbolic",
+                        ))
+                        .on_press(Message::Next)
+                        .padding(space_xs)
+                        .icon_size(space_m)
                         .into(),
                         widget::column::with_capacity(0).width(Length::Fill).into(),
                     ])
@@ -121,6 +127,8 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
                     .spacing(space_xxs)
                     .width(Length::Fill)
                     .into(),
+                    // Padding below playback controls
+                    widget::row::with_capacity(0).height(space_xxs).into(),
                 ])
                 .width(Length::FillPortion(2))
                 .into(),

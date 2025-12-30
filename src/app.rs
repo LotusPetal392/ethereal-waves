@@ -35,7 +35,16 @@ use gst::prelude::ElementExtManual;
 use gstreamer as gst;
 use gstreamer_pbutils as pbutils;
 use sha256::digest;
-use std::{collections::HashMap, path::PathBuf, process, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fs::{self, File},
+    io::Write,
+    path::{Path, PathBuf},
+    process,
+    sync::Arc,
+    time::Duration,
+};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use url::Url;
 use urlencoding::decode;
@@ -65,7 +74,7 @@ pub struct AppModel {
 
     config_handler: Option<cosmic_config::Config>,
 
-    xdg_dirs: BaseDirectories,
+    pub xdg_dirs: BaseDirectories,
 
     library: Library,
     pub is_updating: bool,
@@ -79,6 +88,8 @@ pub struct AppModel {
     player: Player,
 
     pub now_playing: Option<MediaMetaData>,
+    pub artwork_dir: Option<PathBuf>,
+    album_artwork: HashMap<String, Vec<u8>>,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -167,7 +178,7 @@ impl cosmic::Application for AppModel {
                 .unwrap_or_default(),
             app_theme_labels: vec![fl!("match-desktop"), fl!("dark"), fl!("light")],
             config_handler: _flags.config_handler,
-            xdg_dirs: xdg::BaseDirectories::with_prefix("ethereal-waves"),
+            xdg_dirs: xdg::BaseDirectories::with_prefix(Self::APP_ID),
             library: Library::new(),
             is_updating: false,
             playback_progress: 0.0,
@@ -177,6 +188,8 @@ impl cosmic::Application for AppModel {
             dragging_slider: false,
             player: Player::new(),
             now_playing: None,
+            artwork_dir: None,
+            album_artwork: HashMap::new(),
         };
 
         app.library.media = match app.library.load(app.xdg_dirs.clone()) {
@@ -190,6 +203,10 @@ impl cosmic::Application for AppModel {
 
         // Create a startup command that sets the window title.
         let command = app.update_title();
+
+        // Build out artwork cache directory
+        app.artwork_dir = app.xdg_dirs.get_cache_home();
+        app.artwork_dir = Some(app.artwork_dir.unwrap().join("artwork"));
 
         (app, command)
     }
@@ -278,7 +295,7 @@ impl cosmic::Application for AppModel {
 
         if self.now_playing.is_some() {
             subscriptions
-                .push(iced::time::every(Duration::from_millis(100)).map(|_| Message::Tick));
+                .push(iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick));
         }
 
         Subscription::batch(subscriptions)
@@ -346,18 +363,32 @@ impl cosmic::Application for AppModel {
                 return self.update_config();
             }
 
+            // Cancel message for the Open Folder dialog
             Message::Cancelled => {}
 
             Message::ChangeTrack(id) => {
-                let (path, media) = self.library.from_id(id).unwrap();
+                let (path, media_metadata) = self.library.from_id(id).unwrap();
                 let uri = Url::from_file_path(path).unwrap();
-                println!("{}", uri);
 
                 self.player.stop();
-                self.now_playing = Some(media.clone());
+                self.now_playing = Some(media_metadata.clone());
                 self.player.load(uri.as_str());
                 self.player.play();
-                println!("Change track: {:?}", media.title);
+
+                let filename: String = media_metadata.clone().artwork_filename.unwrap();
+
+                let bytes = match self.load_artwork(&filename) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        eprintln!("Failed to load album artwork: {:?}", error);
+                        Vec::new()
+                    }
+                };
+                if bytes.len() > 0 {
+                    self.album_artwork.insert(filename, bytes);
+                }
+
+                println!("Change track: {:?}", media_metadata.title);
             }
 
             Message::Key(modifiers, key) => {
@@ -463,7 +494,8 @@ impl cosmic::Application for AppModel {
             }
 
             Message::TogglePlaying => {
-                println!("Play/Pause")
+                println!("Play/Pause");
+                self.player.pause();
             }
 
             Message::UpdateComplete(library) => {
@@ -480,7 +512,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::UpdateLibrary => {
-                // TODO: Make this suck less and add error handling
+                // TODO: Clean this up
                 if self.is_updating {
                     return Task::none();
                 }
@@ -488,6 +520,7 @@ impl cosmic::Application for AppModel {
                 self.update_progress = 0.0;
 
                 let library_paths = self.config.library_paths.clone();
+                let xdg_dirs = self.xdg_dirs.clone();
 
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -588,24 +621,15 @@ impl cosmic::Application for AppModel {
                             if let Some(duration) = info.duration() {
                                 track_metadata.duration = Some(duration.seconds() as f32);
                             }
-                            // Encoder
-                            track_metadata.encoder =
-                                tags.get::<gst::tags::Encoder>().map(|t| t.get().to_owned());
-                            // Comment
-                            track_metadata.comment =
-                                tags.get::<gst::tags::Comment>().map(|t| t.get().to_owned());
-                            // Extended Comment
-                            track_metadata.extended_comment = tags
-                                .get::<gst::tags::ExtendedComment>()
-                                .map(|t| t.get().to_owned());
-                            // Audio Codec
-                            track_metadata.audio_codec = tags
-                                .get::<gst::tags::AudioCodec>()
-                                .map(|t| t.get().to_owned());
-                            // Container Format
-                            track_metadata.container_format = tags
-                                .get::<gst::tags::ContainerFormat>()
-                                .map(|t| t.get().to_owned());
+
+                            // Cache artwork
+                            if let Some(sample) = tags.get::<gst::tags::Image>() {
+                                track_metadata.artwork_filename =
+                                    cache_image(sample.get(), xdg_dirs.clone());
+                            } else if let Some(sample) = tags.get::<gst::tags::PreviewImage>() {
+                                track_metadata.artwork_filename =
+                                    cache_image(sample.get(), xdg_dirs.clone());
+                            }
                         } else {
                             // If there's no metadata just fill in the filename
                             track_metadata.title = Some(file.to_string_lossy().to_string());
@@ -783,6 +807,19 @@ impl AppModel {
 
         String::from("-0.00")
     }
+
+    pub fn load_artwork(&self, filename: &String) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut path: PathBuf = self.artwork_dir.clone().unwrap();
+        path = path.join(&filename);
+
+        let bytes = fs::read(&path)?;
+
+        Ok(bytes)
+    }
+
+    pub fn get_artwork(&self, filename: String) -> Option<&Vec<u8>> {
+        self.album_artwork.get(&filename)
+    }
 }
 
 /// Flags passed into the app
@@ -823,4 +860,43 @@ impl menu::action::MenuAction for MenuAction {
             MenuAction::UpdateLibrary => Message::UpdateLibrary,
         }
     }
+}
+
+// TODO: Clean this up
+fn cache_image(sample: gst::Sample, xdg_dirs: BaseDirectories) -> Option<String> {
+    let buffer = match sample.buffer() {
+        Some(b) => b,
+        None => return None,
+    };
+
+    let caps = match sample.caps() {
+        Some(c) => c,
+        None => return None,
+    };
+
+    let mime = caps
+        .structure(0)
+        .and_then(|s| s.name().split('/').nth(1))
+        .unwrap_or("jpg");
+
+    let map = buffer.map_readable().ok();
+    let hash = digest(map.as_ref().unwrap().as_slice());
+    let file_name = format!("{hash}.{mime}");
+    let full_path = match xdg_dirs.place_cache_file(format!("artwork/{file_name}")) {
+        Ok(full_path) => full_path,
+        Err(_) => return None,
+    };
+
+    if !Path::new(&full_path).exists() {
+        let mut file = match File::create(full_path) {
+            Ok(file) => file,
+            Err(_) => return None,
+        };
+
+        match file.write_all(map.unwrap().as_slice()) {
+            Ok(()) => (),
+            Err(err) => eprintln!("Cannot save album artwork: {:?}", err),
+        }
+    }
+    Some(file_name)
 }

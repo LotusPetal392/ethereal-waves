@@ -62,11 +62,7 @@ pub struct MediaMetaData {
     pub track_number: Option<u32>,
     pub track_count: Option<u32>,
     pub duration: Option<f32>,
-    pub encoder: Option<String>,
-    pub comment: Option<String>,
-    pub extended_comment: Option<String>,
-    pub audio_codec: Option<String>,
-    pub container_format: Option<String>,
+    pub artwork_filename: Option<String>,
 }
 
 impl MediaMetaData {
@@ -83,11 +79,7 @@ impl MediaMetaData {
             track_number: None,
             track_count: None,
             duration: None,
-            encoder: None,
-            comment: None,
-            extended_comment: None,
-            audio_codec: None,
-            container_format: None,
+            artwork_filename: None,
         }
     }
 }
