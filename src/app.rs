@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::config::{AppTheme, CONFIG_VERSION, Config};
+use crate::config::{AppTheme, CONFIG_VERSION, Config, State};
 use crate::fl;
 use crate::footer::footer;
 use crate::key_bind::key_binds;
@@ -10,16 +10,18 @@ use crate::page::empty_library;
 use crate::page::list_view;
 use crate::player::Player;
 use cosmic::app::context_drawer;
+use cosmic::iced_widget::scrollable;
 use cosmic::prelude::*;
 use cosmic::{
     cosmic_config::{self, CosmicConfigEntry},
     cosmic_theme,
     dialog::file_chooser,
     iced::{
-        self, Alignment, Length, Subscription,
+        self, Alignment, Length, Size, Subscription,
         alignment::{Horizontal, Vertical},
         event::{self, Event},
         keyboard::{Event as KeyEvent, Key, Modifiers},
+        window::Event as WindowEvent,
     },
     theme,
     widget::{
@@ -73,6 +75,8 @@ pub struct AppModel {
     app_theme_labels: Vec<String>,
 
     config_handler: Option<cosmic_config::Config>,
+    state_handler: Option<cosmic_config::Config>,
+    state: crate::config::State,
 
     pub xdg_dirs: BaseDirectories,
 
@@ -83,13 +87,19 @@ pub struct AppModel {
     pub update_total: f32,
     pub update_percent: f32,
 
-    dragging_slider: bool,
+    dragging_progress_slider: bool,
 
     player: Player,
 
     pub now_playing: Option<MediaMetaData>,
     pub artwork_dir: Option<PathBuf>,
     album_artwork: HashMap<String, Vec<u8>>,
+
+    list_view_scroll_offset: f32,
+    row_height: f32,
+    list_start: usize,
+    list_visible_count: usize,
+    list_end: usize,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -102,6 +112,7 @@ pub enum Message {
     Key(Modifiers, Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
+    ListViewScroll(scrollable::Viewport),
     Next,
     Previous,
     Quit,
@@ -116,6 +127,7 @@ pub enum Message {
     UpdateConfig(Config),
     UpdateLibrary,
     UpdateProgress(f32, f32, f32),
+    WindowResized(Size),
 }
 
 /// Create a COSMIC application from the app model
@@ -178,6 +190,8 @@ impl cosmic::Application for AppModel {
                 .unwrap_or_default(),
             app_theme_labels: vec![fl!("match-desktop"), fl!("dark"), fl!("light")],
             config_handler: _flags.config_handler,
+            state_handler: _flags.state_handler,
+            state: _flags.state,
             xdg_dirs: xdg::BaseDirectories::with_prefix(Self::APP_ID),
             library: Library::new(),
             is_updating: false,
@@ -185,11 +199,16 @@ impl cosmic::Application for AppModel {
             update_progress: 0.0,
             update_total: 0.0,
             update_percent: 0.0,
-            dragging_slider: false,
+            dragging_progress_slider: false,
             player: Player::new(),
             now_playing: None,
             artwork_dir: None,
             album_artwork: HashMap::new(),
+            list_view_scroll_offset: 0.0,
+            row_height: 20.0,
+            list_start: 0,
+            list_visible_count: 0,
+            list_end: 0,
         };
 
         app.library.media = match app.library.load(app.xdg_dirs.clone()) {
@@ -279,6 +298,8 @@ impl cosmic::Application for AppModel {
                 Event::Keyboard(KeyEvent::KeyPressed { key, modifiers, .. }) => {
                     Some(Message::Key(modifiers, key))
                 }
+                Event::Window(WindowEvent::CloseRequested) => Some(Message::Quit),
+                Event::Window(WindowEvent::Resized(size)) => Some(Message::WindowResized(size)),
                 _ => None,
             }),
             // Watch for application configuration changes.
@@ -327,6 +348,29 @@ impl cosmic::Application for AppModel {
                         self.config.$name = $value;
                         log::warn!(
                             "failed to save config {:?}: no config handler",
+                            stringify!($name)
+                        );
+                    }
+                }
+            };
+        }
+
+        // Helper for updating application state
+        macro_rules! state_set {
+            ($name: ident, $value: expr) => {
+                match &self.state_handler {
+                    Some(state_handler) => {
+                        match paste::paste! { self.state.[<set_ $name>](&state_handler, $value) } {
+                            Ok(_) => {}
+                            Err(err) => {
+                                log::warn!("failed to save state {:?}: {}", stringify!($name), err);
+                            }
+                        }
+                    }
+                    None => {
+                        self.state.$name = $value;
+                        log::warn!(
+                            "failed to save state {:?}: no config handler",
                             stringify!($name)
                         );
                     }
@@ -405,6 +449,24 @@ impl cosmic::Application for AppModel {
                 eprintln!("{why}");
             }
 
+            // Handle scroll events from scrollable widgets
+            Message::ListViewScroll(viewport) => {
+                println!("{:?}", viewport);
+                let viewport_height = viewport.bounds().height;
+                let total_rows = self.library.media.len();
+                self.list_view_scroll_offset = viewport.absolute_offset().y;
+
+                self.list_start =
+                    (self.list_view_scroll_offset / (self.row_height + 1.0)).floor() as usize;
+                self.list_visible_count = (viewport_height / self.row_height).ceil() as usize + 2;
+                self.list_end = (self.list_start + self.list_visible_count).min(total_rows);
+
+                println!(
+                    "{} {} {}",
+                    self.list_start, self.list_visible_count, self.list_end
+                );
+            }
+
             Message::LaunchUrl(url) => match open::that_detached(&url) {
                 Ok(()) => {}
                 Err(err) => {
@@ -426,7 +488,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::ReleaseSlider => {
-                self.dragging_slider = false;
+                self.dragging_progress_slider = false;
                 self.player
                     .pipeline
                     .seek_simple(
@@ -442,6 +504,7 @@ impl cosmic::Application for AppModel {
                 config_set!(library_paths, library_paths);
             }
 
+            // Add selected paths from the Open dialog
             Message::SelectedPaths(paths) => {
                 let mut library_paths = self.config.library_paths.clone();
 
@@ -453,14 +516,12 @@ impl cosmic::Application for AppModel {
             }
 
             Message::SliderSeek(time) => {
-                self.dragging_slider = true;
+                self.dragging_progress_slider = true;
                 self.playback_progress = time;
-
-                println!("playback time changed: {}", time);
             }
 
+            // Handles GStreamer messages
             Message::Tick => {
-                // Handle GStreamer messages
                 let bus = self.player.pipeline.bus().unwrap();
                 while let Some(msg) = bus.pop() {
                     use gst::MessageView;
@@ -477,7 +538,7 @@ impl cosmic::Application for AppModel {
                     }
                 }
 
-                if !self.dragging_slider {
+                if !self.dragging_progress_slider {
                     if let Some(pos) = self.player.pipeline.query_position::<gst::ClockTime>() {
                         self.playback_progress = pos.mseconds() as f32 / 1000.0;
                     }
@@ -664,6 +725,13 @@ impl cosmic::Application for AppModel {
                 self.update_total = update_total;
                 self.update_percent = percent;
             }
+
+            Message::WindowResized(size) => {
+                let window_width = size.width;
+                let window_height = size.height;
+                state_set!(window_width, window_width);
+                state_set!(window_height, window_height);
+            }
         }
         Task::none()
     }
@@ -828,6 +896,8 @@ impl AppModel {
 #[derive(Clone, Debug)]
 pub struct Flags {
     pub config_handler: Option<cosmic_config::Config>,
+    pub state_handler: Option<cosmic_config::Config>,
+    pub state: State,
 }
 
 /// The page to display in the application.

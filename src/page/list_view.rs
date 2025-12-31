@@ -4,69 +4,70 @@ use crate::library::Library;
 use cosmic::{
     Element, cosmic_theme,
     iced::{Alignment, Length},
-    theme, widget,
+    theme,
+    widget::{self, Column, Row},
 };
 
-pub fn content<'a>(library: &Library) -> Element<'a, Message> {
+pub fn content(library: &Library) -> Element<'_, Message> {
     let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
 
-    let mut content = widget::column::with_children(vec![]);
-    let mut rows = widget::column::with_children(vec![]);
-    let mut count = 1;
+    let mut content = Column::new();
 
+    // Header row
     content = content.push(
-        widget::row::with_children(vec![
-            widget::text::heading(fl!("number"))
-                .width(Length::Fixed(40.0))
-                .align_x(Alignment::End)
-                .into(),
-            widget::text::heading(fl!("title"))
-                .width(Length::FillPortion(1))
-                .into(),
-            widget::text::heading(fl!("album"))
-                .width(Length::FillPortion(1))
-                .into(),
-            widget::text::heading(fl!("artist"))
-                .width(Length::FillPortion(1))
-                .into(),
-        ])
-        .spacing(space_xxs),
-    );
-
-    content = content.push(widget::row::with_children(vec![
-        widget::divider::horizontal::default().into(),
-    ]));
-
-    for (_, metadata) in library.media.clone() {
-        rows = rows.push(
-            widget::mouse_area(
-                widget::row::with_children(vec![
-                    widget::text(format!("{}.", count))
-                        .width(Length::Fixed(40.0))
-                        .align_x(Alignment::End)
-                        .into(),
-                    widget::text(metadata.title.unwrap_or(String::new()))
-                        .width(Length::FillPortion(1))
-                        .into(),
-                    widget::text(metadata.album.unwrap_or(String::new()))
-                        .width(Length::FillPortion(1))
-                        .into(),
-                    widget::text(metadata.artist.unwrap_or(String::new()))
-                        .width(Length::FillPortion(1))
-                        .into(),
-                ])
-                .spacing(space_xxs),
+        Row::new()
+            .spacing(space_xxs)
+            .push(
+                widget::text::heading("#")
+                    .align_x(Alignment::End)
+                    .width(Length::Fixed(40.0)),
             )
-            .on_double_click(Message::ChangeTrack(metadata.id.unwrap())),
-        );
+            .push(widget::text::heading(fl!("title")).width(Length::FillPortion(1)))
+            .push(widget::text::heading(fl!("album")).width(Length::FillPortion(1)))
+            .push(widget::text::heading(fl!("artist")).width(Length::FillPortion(1))),
+    );
+    content = content.push(widget::divider::horizontal::light());
 
-        if count < library.media.len() {
+    // Row data for each file
+    let mut rows = Column::new();
+    let total = library.media.len();
+
+    for (i, metadata) in library.media.values().enumerate() {
+        let id = metadata.id.clone().unwrap();
+        let row = widget::mouse_area(
+            Row::new()
+                .spacing(space_xxs)
+                .height(Length::Fixed(20.0))
+                .push(
+                    widget::text(format!("{}", i + 1))
+                        .width(Length::Fixed(40.0))
+                        .align_x(Alignment::End),
+                )
+                .push(
+                    widget::text(metadata.title.as_deref().unwrap_or(""))
+                        .width(Length::FillPortion(1)),
+                )
+                .push(
+                    widget::text(metadata.album.as_deref().unwrap_or(""))
+                        .width(Length::FillPortion(1)),
+                )
+                .push(
+                    widget::text(metadata.artist.as_deref().unwrap_or(""))
+                        .width(Length::FillPortion(1)),
+                ),
+        )
+        .on_double_click(Message::ChangeTrack(id));
+
+        rows = rows.push(row);
+
+        if i + 1 < total {
             rows = rows.push(widget::divider::horizontal::light());
-            count = count + 1;
         }
     }
 
-    content = content.push(widget::scrollable(rows));
+    let scroller = widget::scrollable(rows).on_scroll(|viewport| Message::ListViewScroll(viewport));
 
-    content.padding(space_xxs).into()
+    content = content.push(scroller);
+
+    content.into()
 }

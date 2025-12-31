@@ -4,10 +4,11 @@ use crate::app::AppModel;
 use cosmic::{
     Application,
     cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry},
+    iced::Subscription,
     theme,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::{any::TypeId, collections::HashSet};
 
 pub const CONFIG_VERSION: u64 = 1;
 
@@ -63,5 +64,51 @@ impl Default for Config {
             app_theme: AppTheme::System,
             library_paths: HashSet::new(),
         }
+    }
+}
+
+#[derive(Clone, CosmicConfigEntry, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default)]
+pub struct State {
+    pub window_height: f32,
+    pub window_width: f32,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            window_height: 1024.0,
+            window_width: 768.0,
+        }
+    }
+}
+
+impl State {
+    pub fn load() -> (Option<cosmic_config::Config>, Self) {
+        match cosmic_config::Config::new_state(AppModel::APP_ID, CONFIG_VERSION) {
+            Ok(config_handler) => {
+                let config = match Self::get_entry(&config_handler) {
+                    Ok(ok) => ok,
+                    Err((errs, config)) => {
+                        log::info!("errors loading config: {errs:?}");
+                        config
+                    }
+                };
+                (Some(config_handler), config)
+            }
+            Err(err) => {
+                log::error!("failed to create config handler: {err}");
+                (None, Self::default())
+            }
+        }
+    }
+
+    pub fn subscription() -> Subscription<cosmic_config::Update<Self>> {
+        struct ConfigSubscription;
+        cosmic_config::config_state_subscription(
+            TypeId::of::<ConfigSubscription>(),
+            AppModel::APP_ID.into(),
+            CONFIG_VERSION,
+        )
     }
 }

@@ -14,7 +14,6 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
         space_xs,
         space_m,
         space_l,
-        space_xl,
         ..
     } = theme::active().cosmic().spacing;
 
@@ -33,6 +32,7 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
     };
     let duration: f32 = now_playing.duration.unwrap_or(0.0);
     let bytes: Option<&Vec<u8>> = app.get_artwork(filename);
+    let artwork_size = 75;
 
     widget::container(widget::column::with_children(vec![
         // Footer
@@ -60,15 +60,14 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
                     widget::row::with_children(vec![
                         if bytes.is_some() {
                             widget::image(image::Handle::from_bytes(bytes.unwrap().clone()))
-                                .height(space_xl * 2)
-                                .width(space_xl * 2)
+                                .height(artwork_size)
+                                .width(artwork_size)
                                 .into()
                         } else {
                             widget::icon(widget::icon::from_svg_bytes(include_bytes!(
                                 "../resources/icons/hicolor/scalable/note.svg"
                             )))
-                            .width(Length::Fixed(64.0))
-                            .height(Length::Fixed(64.0))
+                            .size(artwork_size)
                             .into()
                         },
                         widget::column::with_children(vec![
@@ -129,7 +128,7 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
                     .width(Length::Fill)
                     .into(),
                     // Padding below playback controls
-                    widget::row::with_capacity(0).height(space_xxs).into(),
+                    //widget::vertical_space().height(space_xxs).into(),
                 ])
                 .width(Length::FillPortion(2))
                 .into(),
