@@ -15,6 +15,9 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
 
     let mut content = Column::new();
 
+    let chars: f32 = app.library.media.len().to_string().len() as f32;
+    let number_column_width: f32 = chars * 13.0;
+
     // Header row
     content = content.push(
         Row::new()
@@ -22,7 +25,7 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
             .push(
                 widget::text::heading("#")
                     .align_x(Alignment::End)
-                    .width(Length::Fixed(40.0)),
+                    .width(Length::Fixed(number_column_width)),
             )
             .push(widget::text::heading(fl!("title")).width(Length::FillPortion(1)))
             .push(widget::text::heading(fl!("album")).width(Length::FillPortion(1)))
@@ -39,34 +42,48 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
     let media: Vec<(&PathBuf, &MediaMetaData)> = app.library.media.iter().collect();
     let mut count: u32 = app.list_start as u32 + 1;
 
-    for (_, metadata) in media
-        .get(app.list_start..(app.list_start + app.list_visible_row_count))
-        .unwrap_or(&[])
-    {
+    let mut list_end = app.list_start + app.list_visible_row_count + 1;
+    if list_end > app.library.media.len() {
+        list_end = app.library.media.len();
+    }
+
+    for (_, metadata) in media.get(app.list_start..(list_end)).unwrap_or(&[]) {
         let id = metadata.id.clone().unwrap();
         let row = widget::mouse_area(
             Row::new()
                 .spacing(space_xxs)
                 .height(Length::Fixed(app.list_row_height))
                 .push(
-                    widget::text(format!("{}", count))
-                        .width(Length::Fixed(40.0))
-                        .align_x(Alignment::End),
+                    widget::container(
+                        widget::text(format!("{}", count))
+                            .width(Length::Fixed(number_column_width))
+                            .align_x(Alignment::End),
+                    )
+                    .clip(true),
                 )
                 .push(
-                    widget::text(metadata.title.as_deref().unwrap_or(""))
-                        .wrapping(Wrapping::None)
-                        .width(Length::FillPortion(1)),
+                    widget::container(
+                        widget::text(metadata.title.as_deref().unwrap_or(""))
+                            .wrapping(Wrapping::None)
+                            .width(Length::FillPortion(1)),
+                    )
+                    .clip(true),
                 )
                 .push(
-                    widget::text(metadata.album.as_deref().unwrap_or(""))
-                        .wrapping(Wrapping::None)
-                        .width(Length::FillPortion(1)),
+                    widget::container(
+                        widget::text(metadata.album.as_deref().unwrap_or(""))
+                            .wrapping(Wrapping::None)
+                            .width(Length::FillPortion(1)),
+                    )
+                    .clip(true),
                 )
                 .push(
-                    widget::text(metadata.artist.as_deref().unwrap_or(""))
-                        .wrapping(Wrapping::None)
-                        .width(Length::FillPortion(1)),
+                    widget::container(
+                        widget::text(metadata.artist.as_deref().unwrap_or(""))
+                            .wrapping(Wrapping::None)
+                            .width(Length::FillPortion(1)),
+                    )
+                    .clip(true),
                 ),
         )
         .on_double_click(Message::ChangeTrack(id));

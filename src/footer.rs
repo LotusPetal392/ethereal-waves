@@ -4,7 +4,11 @@ use crate::library::MediaMetaData;
 use cosmic::widget::image;
 use cosmic::{
     Theme, cosmic_theme,
-    iced::{Alignment, Length},
+    font::Font,
+    iced::{
+        Alignment, Length,
+        font::{self, Weight},
+    },
     theme, widget,
 };
 
@@ -71,8 +75,18 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
                             .into()
                         },
                         widget::column::with_children(vec![
-                            widget::text(now_playing.title.unwrap_or(String::new())).into(),
-                            widget::text(now_playing.album.unwrap_or(String::new())).into(),
+                            widget::text(now_playing.title.unwrap_or(String::new()))
+                                .font(Font {
+                                    weight: Weight::Bold,
+                                    ..Font::default()
+                                })
+                                .into(),
+                            widget::text(now_playing.album.unwrap_or(String::new()))
+                                .font(Font {
+                                    style: font::Style::Italic,
+                                    ..Font::default()
+                                })
+                                .into(),
                             widget::text(now_playing.artist.unwrap_or(String::new())).into(),
                         ])
                         .into(),

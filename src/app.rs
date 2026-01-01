@@ -316,7 +316,7 @@ impl cosmic::Application for AppModel {
 
         if self.now_playing.is_some() {
             subscriptions
-                .push(iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick));
+                .push(iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick));
         }
 
         Subscription::batch(subscriptions)
