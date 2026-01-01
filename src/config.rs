@@ -4,11 +4,10 @@ use crate::app::AppModel;
 use cosmic::{
     Application,
     cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry},
-    iced::Subscription,
     theme,
 };
 use serde::{Deserialize, Serialize};
-use std::{any::TypeId, collections::HashSet};
+use std::collections::HashSet;
 
 pub const CONFIG_VERSION: u64 = 1;
 
@@ -101,14 +100,5 @@ impl State {
                 (None, Self::default())
             }
         }
-    }
-
-    pub fn subscription() -> Subscription<cosmic_config::Update<Self>> {
-        struct ConfigSubscription;
-        cosmic_config::config_state_subscription(
-            TypeId::of::<ConfigSubscription>(),
-            AppModel::APP_ID.into(),
-            CONFIG_VERSION,
-        )
     }
 }

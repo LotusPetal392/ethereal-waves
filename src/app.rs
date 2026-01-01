@@ -80,7 +80,8 @@ pub struct AppModel {
 
     pub xdg_dirs: BaseDirectories,
 
-    library: Library,
+    pub library: Library,
+
     pub is_updating: bool,
     pub playback_progress: f32,
     pub update_progress: f32,
@@ -95,11 +96,10 @@ pub struct AppModel {
     pub artwork_dir: Option<PathBuf>,
     album_artwork: HashMap<String, Vec<u8>>,
 
-    list_view_scroll_offset: f32,
-    row_height: f32,
-    list_start: usize,
-    list_visible_count: usize,
-    list_end: usize,
+    pub list_row_height: f32,
+    pub list_view_scroll_offset: f32,
+    pub list_start: usize,
+    pub list_visible_row_count: usize,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -204,11 +204,10 @@ impl cosmic::Application for AppModel {
             now_playing: None,
             artwork_dir: None,
             album_artwork: HashMap::new(),
+            list_row_height: 20.0,
             list_view_scroll_offset: 0.0,
-            row_height: 20.0,
             list_start: 0,
-            list_visible_count: 0,
-            list_end: 0,
+            list_visible_row_count: 0,
         };
 
         app.library.media = match app.library.load(app.xdg_dirs.clone()) {
@@ -271,7 +270,7 @@ impl cosmic::Application for AppModel {
                 if self.library.media.len() == 0 {
                     empty_library::content()
                 } else {
-                    list_view::content(&self.library)
+                    list_view::content(&self)
                 }
             }
         };
@@ -299,6 +298,7 @@ impl cosmic::Application for AppModel {
                     Some(Message::Key(modifiers, key))
                 }
                 Event::Window(WindowEvent::CloseRequested) => Some(Message::Quit),
+                Event::Window(WindowEvent::Closed) => Some(Message::Quit),
                 Event::Window(WindowEvent::Resized(size)) => Some(Message::WindowResized(size)),
                 _ => None,
             }),
@@ -451,20 +451,14 @@ impl cosmic::Application for AppModel {
 
             // Handle scroll events from scrollable widgets
             Message::ListViewScroll(viewport) => {
-                println!("{:?}", viewport);
                 let viewport_height = viewport.bounds().height;
-                let total_rows = self.library.media.len();
                 self.list_view_scroll_offset = viewport.absolute_offset().y;
 
                 self.list_start =
-                    (self.list_view_scroll_offset / (self.row_height + 1.0)).floor() as usize;
-                self.list_visible_count = (viewport_height / self.row_height).ceil() as usize + 2;
-                self.list_end = (self.list_start + self.list_visible_count).min(total_rows);
+                    (self.list_view_scroll_offset / (self.list_row_height + 1.0)).floor() as usize;
 
-                println!(
-                    "{} {} {}",
-                    self.list_start, self.list_visible_count, self.list_end
-                );
+                self.list_visible_row_count =
+                    (viewport_height / (self.list_row_height + 1.0)).ceil() as usize;
             }
 
             Message::LaunchUrl(url) => match open::that_detached(&url) {
@@ -483,6 +477,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::Quit => {
+                print!("Quit message sent");
                 self.player.stop();
                 process::exit(0);
             }
@@ -606,7 +601,8 @@ impl cosmic::Application for AppModel {
                                 .unwrap_or("")
                                 .split(".")
                                 .last()
-                                .unwrap_or("");
+                                .unwrap_or("")
+                                .to_lowercase();
                             let size = entry.metadata().unwrap().len();
 
                             if valid_extensions.contains(&extension.to_string())
