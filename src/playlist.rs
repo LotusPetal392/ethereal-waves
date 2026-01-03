@@ -1,25 +1,34 @@
-use crate::library::MediaMetaData;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub struct Playlist {
+    id: u32,
     name: String,
-    tracks: Vec<(usize, String)>,
+    pub tracks: Vec<(usize, String)>,
 }
 
 impl Playlist {
     pub fn new() -> Playlist {
         Self {
+            id: 0,
             name: String::new(),
             tracks: Vec::new(),
         }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn set_id(&mut self, id: u32) {
+        self.id = id;
     }
 
     pub fn name(&self) -> String {
         self.name.clone()
     }
 
-    pub fn rename(&mut self, name: String) {
+    pub fn set_name(&mut self, name: String) {
         self.name = name
     }
 

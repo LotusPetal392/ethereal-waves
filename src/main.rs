@@ -9,6 +9,7 @@ mod library;
 mod menu;
 mod page;
 mod player;
+mod playlist;
 
 use app::Flags;
 use config::{Config, State};

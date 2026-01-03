@@ -30,10 +30,9 @@ impl Library {
     }
 
     // Load media from the xdg data directory if it exists
-    pub fn load(
-        &self,
+    pub async fn load(
         xdg_dirs: BaseDirectories,
-    ) -> Result<HashMap<PathBuf, MediaMetaData>, Box<dyn Error>> {
+    ) -> Result<HashMap<PathBuf, MediaMetaData>, Box<dyn std::error::Error + Send + Sync>> {
         let file_path = xdg_dirs.get_data_file("library.json").unwrap();
         let data = fs::read_to_string(file_path)?;
         let json: HashMap<PathBuf, MediaMetaData> = serde_json::from_str(&data)?;
