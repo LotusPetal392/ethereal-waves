@@ -123,6 +123,7 @@ pub enum Message {
     ListViewScroll(scrollable::Viewport),
     Next,
     NewPlaylist,
+    Noop,
     Previous,
     Quit,
     ReleaseSlider,
@@ -526,6 +527,8 @@ impl cosmic::Application for AppModel {
             Message::Next => {
                 println!("Next");
             }
+
+            Message::Noop => {}
 
             Message::Previous => {
                 println!("Previous")

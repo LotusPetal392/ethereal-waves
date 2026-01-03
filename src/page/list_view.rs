@@ -92,11 +92,13 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
                                 .width(Length::FillPortion(1)),
                         )
                         .clip(true),
-                    ),
+                    )
+                    .width(Length::Fill),
             )
             .class(button_style(
                 app.list_selected.contains(metadata.id.as_ref().unwrap()),
             ))
+            .on_press_down(Message::Noop)
             .padding(0),
         )
         .on_release(Message::ListSelectRow(id.clone()))
@@ -145,12 +147,12 @@ fn button_appearance(theme: &theme::Theme, selected: bool, hovered: bool) -> wid
         appearance.background = Some(Color::from(cosmic.accent_color()).into());
         appearance.icon_color = Some(Color::from(cosmic.on_accent_color()));
         appearance.text_color = Some(Color::from(cosmic.on_accent_color()));
-    } else {
-        if hovered {
-            appearance.background = Some(Color::from(cosmic.accent_color()).into());
-        } else {
-            appearance.background = Some(Color::TRANSPARENT.into());
-        }
+    } else if hovered {
+        appearance.background = Some(Color::from(cosmic.bg_component_color()).into());
+        appearance.icon_color = Some(Color::from(cosmic.on_bg_component_color()));
+        appearance.text_color = Some(Color::from(cosmic.on_bg_component_color()));
+    } else if !selected && !hovered {
+        appearance.background = Some(Color::TRANSPARENT.into());
         appearance.icon_color = Some(Color::from(cosmic.on_bg_color()));
         appearance.text_color = Some(Color::from(cosmic.on_bg_color()));
     }
