@@ -4,6 +4,7 @@ repository = Repository
 view = View
 git-description = Git commit {$hash} on {$date}
 file = File
+new-playlist = New Playlist
 quit = Quit
 about-ethereal-waves = About Ethereal Waves...
 settings-menu = Settings...

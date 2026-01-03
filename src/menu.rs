@@ -16,6 +16,8 @@ pub fn menu_bar<'a>(
             menu::items(
                 key_binds,
                 vec![
+                    menu::Item::Button(fl!("new-playlist"), None, MenuAction::NewPlaylist),
+                    menu::Item::Divider,
                     if is_updating {
                         menu::Item::ButtonDisabled(
                             fl!("update-library"),

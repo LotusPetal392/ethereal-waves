@@ -10,6 +10,7 @@ use crate::page::empty_library;
 use crate::page::list_view;
 use crate::player::Player;
 use cosmic::app::context_drawer;
+use cosmic::iced::keyboard::key::Named;
 use cosmic::iced_widget::scrollable;
 use cosmic::prelude::*;
 use cosmic::{
@@ -100,6 +101,10 @@ pub struct AppModel {
     pub list_view_scroll_offset: f32,
     pub list_start: usize,
     pub list_visible_row_count: usize,
+    pub list_selected: Vec<String>,
+
+    control_pressed: u8,
+    shift_pressed: u8,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -109,11 +114,14 @@ pub enum Message {
     AppTheme(AppTheme),
     Cancelled,
     ChangeTrack(String),
-    Key(Modifiers, Key),
+    KeyPressed(Modifiers, Key),
+    KeyReleased(Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
+    ListSelectRow(String),
     ListViewScroll(scrollable::Viewport),
     Next,
+    NewPlaylist,
     Previous,
     Quit,
     ReleaseSlider,
@@ -181,7 +189,6 @@ impl cosmic::Application for AppModel {
             about,
             nav,
             key_binds: key_binds(),
-            // Optional configuration file for an application.
             config: cosmic_config::Config::new(Self::APP_ID, CONFIG_VERSION)
                 .map(|context| match Config::get_entry(&context) {
                     Ok(config) => config,
@@ -208,8 +215,14 @@ impl cosmic::Application for AppModel {
             list_view_scroll_offset: 0.0,
             list_start: 0,
             list_visible_row_count: 0,
+            list_selected: Vec::new(),
+            control_pressed: 0,
+            shift_pressed: 0,
         };
 
+        println!("{:?}", app.config);
+
+        // Load library
         app.library.media = match app.library.load(app.xdg_dirs.clone()) {
             Ok(library) => library,
             Err(error) => {
@@ -218,6 +231,8 @@ impl cosmic::Application for AppModel {
                 library
             }
         };
+
+        // TODO: Load playlists
 
         // Create a startup command that sets the window title.
         let command = app.update_title();
@@ -295,7 +310,10 @@ impl cosmic::Application for AppModel {
         let mut subscriptions = vec![
             event::listen_with(|event, _status, _window_id| match event {
                 Event::Keyboard(KeyEvent::KeyPressed { key, modifiers, .. }) => {
-                    Some(Message::Key(modifiers, key))
+                    Some(Message::KeyPressed(modifiers, key))
+                }
+                Event::Keyboard(KeyEvent::KeyReleased { key, .. }) => {
+                    Some(Message::KeyReleased(key))
                 }
                 Event::Window(WindowEvent::CloseRequested) => Some(Message::Quit),
                 Event::Window(WindowEvent::Closed) => Some(Message::Quit),
@@ -437,16 +455,50 @@ impl cosmic::Application for AppModel {
                 println!("Change track: {:?}", media_metadata.title);
             }
 
-            Message::Key(modifiers, key) => {
+            Message::KeyPressed(modifiers, key) => {
                 for (key_bind, action) in self.key_binds.iter() {
                     if key_bind.matches(modifiers, &key) {
                         return self.update(action.message());
                     }
                 }
+                if key == Key::Named(Named::Control) {
+                    self.control_pressed = self.control_pressed + 1;
+                }
+                if key == Key::Named(Named::Shift) {
+                    self.shift_pressed = self.shift_pressed + 1;
+                }
+            }
+
+            Message::KeyReleased(key) => {
+                if key == Key::Named(Named::Control) {
+                    self.control_pressed = self.control_pressed - 1;
+                }
+                if key == Key::Named(Named::Shift) {
+                    self.shift_pressed = self.shift_pressed - 1;
+                }
             }
 
             Message::LibraryPathOpenError(why) => {
                 eprintln!("{why}");
+            }
+
+            Message::ListSelectRow(id) => {
+                match self.control_pressed {
+                    0 => {
+                        self.list_selected.clear();
+                        self.list_selected.push(id);
+                    }
+                    1..2 => {
+                        if self.list_selected.contains(&id) {
+                            self.list_selected
+                                .remove(self.list_selected.iter().position(|i| i == &id).unwrap());
+                        } else {
+                            self.list_selected.push(id);
+                        }
+                    }
+                    _ => {}
+                }
+                println!("{:?}", self.list_selected);
             }
 
             // Handle scroll events from scrollable widgets
@@ -467,6 +519,8 @@ impl cosmic::Application for AppModel {
                     eprintln!("failed to open {url:?}: {err}");
                 }
             },
+
+            Message::NewPlaylist => {}
 
             Message::Next => {
                 println!("Next");
@@ -912,6 +966,7 @@ pub enum ContextPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
     About,
+    NewPlaylist,
     Settings,
     Quit,
     UpdateLibrary,
@@ -923,6 +978,7 @@ impl menu::action::MenuAction for MenuAction {
     fn message(&self) -> Self::Message {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
+            MenuAction::NewPlaylist => Message::NewPlaylist,
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
             MenuAction::Quit => Message::Quit,
             MenuAction::UpdateLibrary => Message::UpdateLibrary,
