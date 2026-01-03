@@ -37,6 +37,9 @@ pub fn menu_bar<'a>(
             menu::items(
                 key_binds,
                 vec![
+                    menu::Item::Button(fl!("size-increase"), None, MenuAction::SizeIncrease),
+                    menu::Item::Button(fl!("size-decrease"), None, MenuAction::SizeDecrease),
+                    menu::Item::Divider,
                     menu::Item::Button(fl!("settings-menu"), None, MenuAction::Settings),
                     menu::Item::Divider,
                     menu::Item::Button(fl!("about-ethereal-waves"), None, MenuAction::About),

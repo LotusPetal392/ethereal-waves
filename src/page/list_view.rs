@@ -11,7 +11,11 @@ use cosmic::{
 use std::path::PathBuf;
 
 pub fn content(app: &AppModel) -> Element<'_, Message> {
-    let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
+    let cosmic_theme::Spacing {
+        space_xxs,
+        space_xxxs,
+        ..
+    } = theme::active().cosmic().spacing;
 
     let mut content = Column::new();
 
@@ -22,6 +26,7 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
     content = content.push(
         Row::new()
             .spacing(space_xxs)
+            .push(widget::horizontal_space().width(space_xxxs / 2))
             .push(
                 widget::text::heading("#")
                     .align_x(Alignment::End)
@@ -29,7 +34,8 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
             )
             .push(widget::text::heading(fl!("title")).width(Length::FillPortion(1)))
             .push(widget::text::heading(fl!("album")).width(Length::FillPortion(1)))
-            .push(widget::text::heading(fl!("artist")).width(Length::FillPortion(1))),
+            .push(widget::text::heading(fl!("artist")).width(Length::FillPortion(1)))
+            .push(widget::horizontal_space().width(space_xxxs / 2)),
     );
     content = content.push(widget::divider::horizontal::default());
 

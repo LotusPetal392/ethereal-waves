@@ -97,6 +97,7 @@ pub struct AppModel {
     pub artwork_dir: Option<PathBuf>,
     album_artwork: HashMap<String, Vec<u8>>,
 
+    size_multiplier: f32,
     pub list_row_height: f32,
     pub list_view_scroll_offset: f32,
     pub list_start: usize,
@@ -127,6 +128,8 @@ pub enum Message {
     ReleaseSlider,
     RemoveLibraryPath(String),
     SelectedPaths(Vec<String>),
+    SizeDecrease,
+    SizeIncrease,
     SliderSeek(f32),
     Tick,
     ToggleContextPage(ContextPage),
@@ -198,7 +201,7 @@ impl cosmic::Application for AppModel {
             app_theme_labels: vec![fl!("match-desktop"), fl!("dark"), fl!("light")],
             config_handler: _flags.config_handler,
             state_handler: _flags.state_handler,
-            state: _flags.state,
+            state: _flags.state.clone(),
             xdg_dirs: xdg::BaseDirectories::with_prefix(Self::APP_ID),
             library: Library::new(),
             is_updating: false,
@@ -211,6 +214,7 @@ impl cosmic::Application for AppModel {
             now_playing: None,
             artwork_dir: None,
             album_artwork: HashMap::new(),
+            size_multiplier: _flags.state.size_multiplier,
             list_row_height: 20.0,
             list_view_scroll_offset: 0.0,
             list_start: 0,
@@ -219,8 +223,6 @@ impl cosmic::Application for AppModel {
             control_pressed: 0,
             shift_pressed: 0,
         };
-
-        println!("{:?}", app.config);
 
         // Load library
         app.library.media = match app.library.load(app.xdg_dirs.clone()) {
@@ -240,6 +242,8 @@ impl cosmic::Application for AppModel {
         // Build out artwork cache directory
         app.artwork_dir = app.xdg_dirs.get_cache_home();
         app.artwork_dir = Some(app.artwork_dir.unwrap().join("artwork"));
+
+        app.update_list_row_height();
 
         (app, command)
     }
@@ -409,7 +413,7 @@ impl cosmic::Application for AppModel {
                                 if let Ok(decoded) = decode(u.path()) {
                                     paths.push(decoded.into_owned());
                                 } else {
-                                    println!("Can't decode URL.");
+                                    eprintln!("Can't decode URL.");
                                 }
                             }
                             Message::SelectedPaths(paths)
@@ -482,24 +486,21 @@ impl cosmic::Application for AppModel {
                 eprintln!("{why}");
             }
 
-            Message::ListSelectRow(id) => {
-                match self.control_pressed {
-                    0 => {
-                        self.list_selected.clear();
+            Message::ListSelectRow(id) => match self.control_pressed {
+                0 => {
+                    self.list_selected.clear();
+                    self.list_selected.push(id);
+                }
+                1..2 => {
+                    if self.list_selected.contains(&id) {
+                        self.list_selected
+                            .remove(self.list_selected.iter().position(|i| i == &id).unwrap());
+                    } else {
                         self.list_selected.push(id);
                     }
-                    1..2 => {
-                        if self.list_selected.contains(&id) {
-                            self.list_selected
-                                .remove(self.list_selected.iter().position(|i| i == &id).unwrap());
-                        } else {
-                            self.list_selected.push(id);
-                        }
-                    }
-                    _ => {}
                 }
-                println!("{:?}", self.list_selected);
-            }
+                _ => {}
+            },
 
             // Handle scroll events from scrollable widgets
             Message::ListViewScroll(viewport) => {
@@ -562,6 +563,26 @@ impl cosmic::Application for AppModel {
                 }
 
                 config_set!(library_paths, library_paths);
+            }
+
+            Message::SizeDecrease => {
+                self.size_multiplier = self.size_multiplier - 1.0;
+                if self.size_multiplier < 4.0 {
+                    self.size_multiplier = 4.0;
+                }
+
+                self.update_list_row_height();
+                state_set!(size_multiplier, self.size_multiplier);
+            }
+
+            Message::SizeIncrease => {
+                self.size_multiplier = self.size_multiplier + 1.0;
+                if self.size_multiplier > 10.0 {
+                    self.size_multiplier = 10.0;
+                }
+
+                self.update_list_row_height();
+                state_set!(size_multiplier, self.size_multiplier);
             }
 
             Message::SliderSeek(time) => {
@@ -940,6 +961,10 @@ impl AppModel {
     pub fn get_artwork(&self, filename: String) -> Option<&Vec<u8>> {
         self.album_artwork.get(&filename)
     }
+
+    pub fn update_list_row_height(&mut self) {
+        self.list_row_height = 5.0 * self.size_multiplier;
+    }
 }
 
 /// Flags passed into the app
@@ -967,8 +992,10 @@ pub enum ContextPage {
 pub enum MenuAction {
     About,
     NewPlaylist,
-    Settings,
     Quit,
+    Settings,
+    SizeDecrease,
+    SizeIncrease,
     UpdateLibrary,
 }
 
@@ -979,8 +1006,10 @@ impl menu::action::MenuAction for MenuAction {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
             MenuAction::NewPlaylist => Message::NewPlaylist,
-            MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
             MenuAction::Quit => Message::Quit,
+            MenuAction::SizeDecrease => Message::SizeDecrease,
+            MenuAction::SizeIncrease => Message::SizeIncrease,
+            MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
             MenuAction::UpdateLibrary => Message::UpdateLibrary,
         }
     }
