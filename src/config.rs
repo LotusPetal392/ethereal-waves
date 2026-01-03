@@ -34,6 +34,7 @@ impl AppTheme {
 pub struct Config {
     pub app_theme: AppTheme,
     pub library_paths: HashSet<String>,
+    pub list_text_wrap: bool,
 }
 
 impl Config {
@@ -62,6 +63,7 @@ impl Default for Config {
         Self {
             app_theme: AppTheme::System,
             library_paths: HashSet::new(),
+            list_text_wrap: false,
         }
     }
 }

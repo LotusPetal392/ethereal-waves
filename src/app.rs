@@ -26,11 +26,11 @@ use cosmic::{
     },
     theme,
     widget::{
-        self,
+        self, Column, Row,
         about::About,
         icon,
         menu::{self, Action},
-        nav_bar,
+        nav_bar, toggler,
     },
 };
 use gst::prelude::ElementExt;
@@ -46,7 +46,7 @@ use std::{
     path::{Path, PathBuf},
     process,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use url::Url;
@@ -71,7 +71,7 @@ pub struct AppModel {
     /// Key bindings for the application's menu bar.
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// Configuration data that persists between application runs.
-    config: Config,
+    pub config: Config,
     /// Settings page / app theme dropdown labels
     app_theme_labels: Vec<String>,
 
@@ -103,6 +103,7 @@ pub struct AppModel {
     pub list_start: usize,
     pub list_visible_row_count: usize,
     pub list_selected: Vec<String>,
+    list_last_clicked: Option<Instant>,
 
     control_pressed: u8,
     shift_pressed: u8,
@@ -123,7 +124,6 @@ pub enum Message {
     ListViewScroll(scrollable::Viewport),
     Next,
     NewPlaylist,
-    Noop,
     Previous,
     Quit,
     ReleaseSlider,
@@ -134,6 +134,7 @@ pub enum Message {
     SliderSeek(f32),
     Tick,
     ToggleContextPage(ContextPage),
+    ToggleListTextWrap(bool),
     TogglePlaying,
     UpdateComplete(Library),
     UpdateConfig(Config),
@@ -221,6 +222,7 @@ impl cosmic::Application for AppModel {
             list_start: 0,
             list_visible_row_count: 0,
             list_selected: Vec::new(),
+            list_last_clicked: None,
             control_pressed: 0,
             shift_pressed: 0,
         };
@@ -434,29 +436,38 @@ impl cosmic::Application for AppModel {
             Message::Cancelled => {}
 
             Message::ChangeTrack(id) => {
+                // TODO: Make a proper artwork cache
                 let (path, media_metadata) = self.library.from_id(id).unwrap();
                 let uri = Url::from_file_path(path).unwrap();
+                let now = Instant::now();
 
-                self.player.stop();
-                self.now_playing = Some(media_metadata.clone());
-                self.player.load(uri.as_str());
-                self.player.play();
+                if let Some(last) = self.list_last_clicked {
+                    let elapsed = now.duration_since(last);
+                    println!("{:?} {:?}", now, elapsed);
+                    if elapsed <= Duration::from_millis(400) {
+                        self.player.stop();
+                        self.now_playing = Some(media_metadata.clone());
+                        self.player.load(uri.as_str());
+                        self.player.play();
 
-                if media_metadata.artwork_filename.is_some() {
-                    let filename = media_metadata.artwork_filename.clone().unwrap();
+                        if media_metadata.artwork_filename.is_some() {
+                            let filename = media_metadata.artwork_filename.clone().unwrap();
 
-                    let bytes = match self.load_artwork(&filename) {
-                        Ok(bytes) => bytes,
-                        Err(error) => {
-                            eprintln!("Failed to load album artwork: {:?}", error);
-                            Vec::new()
+                            let bytes = match self.load_artwork(&filename) {
+                                Ok(bytes) => bytes,
+                                Err(error) => {
+                                    eprintln!("Failed to load album artwork: {:?}", error);
+                                    Vec::new()
+                                }
+                            };
+                            if bytes.len() > 0 {
+                                self.album_artwork.insert(filename, bytes);
+                            }
                         }
-                    };
-                    if bytes.len() > 0 {
-                        self.album_artwork.insert(filename, bytes);
                     }
                 }
 
+                self.list_last_clicked = Some(now);
                 println!("Change track: {:?}", media_metadata.title);
             }
 
@@ -528,8 +539,6 @@ impl cosmic::Application for AppModel {
                 println!("Next");
             }
 
-            Message::Noop => {}
-
             Message::Previous => {
                 println!("Previous")
             }
@@ -541,14 +550,15 @@ impl cosmic::Application for AppModel {
             }
 
             Message::ReleaseSlider => {
+                // TODO: Don't seek if the player statis isn't playing or paused
                 self.dragging_progress_slider = false;
-                self.player
-                    .pipeline
-                    .seek_simple(
-                        gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-                        gst::ClockTime::from_seconds(self.playback_progress as u64),
-                    )
-                    .unwrap();
+                match self.player.pipeline.seek_simple(
+                    gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
+                    gst::ClockTime::from_seconds(self.playback_progress as u64),
+                ) {
+                    Ok(_) => {}
+                    Err(err) => eprintln!("Failed to seek: {:?}", err),
+                };
             }
 
             Message::RemoveLibraryPath(path) => {
@@ -569,7 +579,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::SizeDecrease => {
-                self.size_multiplier = self.size_multiplier - 1.0;
+                self.size_multiplier = self.size_multiplier - 2.0;
                 if self.size_multiplier < 4.0 {
                     self.size_multiplier = 4.0;
                 }
@@ -579,9 +589,9 @@ impl cosmic::Application for AppModel {
             }
 
             Message::SizeIncrease => {
-                self.size_multiplier = self.size_multiplier + 1.0;
-                if self.size_multiplier > 10.0 {
-                    self.size_multiplier = 10.0;
+                self.size_multiplier = self.size_multiplier + 2.0;
+                if self.size_multiplier > 20.0 {
+                    self.size_multiplier = 20.0;
                 }
 
                 self.update_list_row_height();
@@ -627,6 +637,10 @@ impl cosmic::Application for AppModel {
                     self.context_page = context_page;
                     self.core.window.show_context = true;
                 }
+            }
+
+            Message::ToggleListTextWrap(list_text_wrap) => {
+                config_set!(list_text_wrap, list_text_wrap);
             }
 
             Message::TogglePlaying => {
@@ -850,42 +864,47 @@ impl AppModel {
             AppTheme::System => 0,
         };
 
-        let mut library_column = widget::column();
+        let mut library_column = Column::new();
+
         library_column = library_column.push(
-            widget::row::with_children(vec![
-                widget::column::with_children(vec![
-                    widget::button::text(fl!("add-location"))
-                        .on_press(Message::AddLibraryDialog)
-                        .into(),
-                ])
-                .width(Length::FillPortion(1))
-                .align_x(Alignment::Start)
-                .into(),
-                widget::column::with_children(vec![
-                    widget::button::text(fl!("update-library"))
-                        .on_press(Message::UpdateLibrary)
-                        .into(),
-                ])
-                .width(Length::FillPortion(1))
-                .align_x(Alignment::End)
-                .into(),
-            ])
-            .width(Length::Fill),
+            Row::new()
+                .push(
+                    Column::new()
+                        .push(
+                            widget::button::text(fl!("add-location"))
+                                .on_press(Message::AddLibraryDialog),
+                        )
+                        .width(Length::FillPortion(1))
+                        .align_x(Alignment::Start),
+                )
+                .push(
+                    Column::new()
+                        .push(
+                            widget::button::text(fl!("update-library"))
+                                .on_press(Message::UpdateLibrary),
+                        )
+                        .width(Length::FillPortion(1))
+                        .align_x(Alignment::End),
+                )
+                .width(Length::Fill),
         );
 
         let library_paths_length = self.config.library_paths.len() - 1;
 
+        // Create library path rows
         for (i, path) in self.config.library_paths.iter().enumerate() {
-            let mut path_row = widget::row::with_capacity(2);
-            // Adds text
-            path_row =
-                path_row.push(widget::text::text(path.clone()).width(Length::FillPortion(1)));
-            // Adds delete button
-            path_row = path_row.push(
-                widget::button::icon(widget::icon::from_name("window-close-symbolic"))
-                    .on_press(Message::RemoveLibraryPath(path.clone())),
+            library_column = library_column.push(
+                Row::new()
+                    .width(Length::Fill)
+                    .padding(space_xxs)
+                    // Adds text
+                    .push(widget::text::text(path.clone()).width(Length::FillPortion(1)))
+                    // Adds delete button
+                    .push(
+                        widget::button::icon(widget::icon::from_name("window-close-symbolic"))
+                            .on_press(Message::RemoveLibraryPath(path.clone())),
+                    ),
             );
-            library_column = library_column.push(path_row.width(Length::Fill).padding(space_xxs));
 
             if i < library_paths_length {
                 library_column = library_column.push(widget::divider::horizontal::light());
@@ -907,6 +926,14 @@ impl AppModel {
                             })
                         },
                     ))
+                })
+                .into(),
+            widget::settings::section()
+                .title(fl!("list-view"))
+                .add({
+                    widget::settings::item::builder(fl!("wrap-text")).control(
+                        toggler(self.config.list_text_wrap).on_toggle(Message::ToggleListTextWrap),
+                    )
                 })
                 .into(),
             widget::settings::section()

@@ -17,6 +17,8 @@ library = Library
 add-location = Add Location
 update-library = Update Library
 updating-library = Updating Library
+wrap-text = Wrap Text
+list-view = List View
 
 match-desktop = Match Desktop
 dark = Dark

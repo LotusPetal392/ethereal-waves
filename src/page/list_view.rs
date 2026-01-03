@@ -53,6 +53,12 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
         list_end = app.library.media.len();
     }
 
+    let wrapping = if app.config.list_text_wrap {
+        Wrapping::Word
+    } else {
+        Wrapping::None
+    };
+
     for (_, metadata) in media.get(app.list_start..(list_end)).unwrap_or(&[]) {
         let id = metadata.id.clone().unwrap();
 
@@ -72,7 +78,7 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
                     .push(
                         widget::container(
                             widget::text(metadata.title.as_deref().unwrap_or(""))
-                                .wrapping(Wrapping::None)
+                                .wrapping(wrapping)
                                 .width(Length::FillPortion(1)),
                         )
                         .clip(true),
@@ -80,7 +86,7 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
                     .push(
                         widget::container(
                             widget::text(metadata.album.as_deref().unwrap_or(""))
-                                .wrapping(Wrapping::None)
+                                .wrapping(wrapping)
                                 .width(Length::FillPortion(1)),
                         )
                         .clip(true),
@@ -88,7 +94,7 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
                     .push(
                         widget::container(
                             widget::text(metadata.artist.as_deref().unwrap_or(""))
-                                .wrapping(Wrapping::None)
+                                .wrapping(wrapping)
                                 .width(Length::FillPortion(1)),
                         )
                         .clip(true),
@@ -98,11 +104,10 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
             .class(button_style(
                 app.list_selected.contains(metadata.id.as_ref().unwrap()),
             ))
-            .on_press_down(Message::Noop)
+            .on_press_down(Message::ChangeTrack(metadata.id.clone().unwrap()))
             .padding(0),
         )
-        .on_release(Message::ListSelectRow(id.clone()))
-        .on_double_click(Message::ChangeTrack(id));
+        .on_release(Message::ListSelectRow(id.clone()));
 
         rows = rows.push(row);
         if count < app.library.media.len() as u32 {
@@ -151,7 +156,7 @@ fn button_appearance(theme: &theme::Theme, selected: bool, hovered: bool) -> wid
         appearance.background = Some(Color::from(cosmic.bg_component_color()).into());
         appearance.icon_color = Some(Color::from(cosmic.on_bg_component_color()));
         appearance.text_color = Some(Color::from(cosmic.on_bg_component_color()));
-    } else if !selected && !hovered {
+    } else {
         appearance.background = Some(Color::TRANSPARENT.into());
         appearance.icon_color = Some(Color::from(cosmic.on_bg_color()));
         appearance.text_color = Some(Color::from(cosmic.on_bg_color()));
