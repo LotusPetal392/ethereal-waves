@@ -30,7 +30,7 @@ use cosmic::{
     widget::{
         self, Column, Row,
         about::About,
-        icon,
+        icon, image,
         menu::{self, Action as WidgetMenuAction},
         nav_bar, toggler,
     },
@@ -96,6 +96,7 @@ pub struct AppModel {
     player: Player,
 
     pub now_playing: Option<MediaMetaData>,
+    pub now_playing_handle: Option<image::Handle>,
     pub artwork_dir: Option<PathBuf>,
     album_artwork: HashMap<String, Vec<u8>>,
     dragging_progress_slider: bool,
@@ -222,6 +223,7 @@ impl cosmic::Application for AppModel {
             dragging_progress_slider: false,
             player: Player::new(),
             now_playing: None,
+            now_playing_handle: None,
             artwork_dir: None,
             album_artwork: HashMap::new(),
             size_multiplier: _flags.state.size_multiplier,
@@ -468,7 +470,8 @@ impl cosmic::Application for AppModel {
                                 }
                             };
                             if bytes.len() > 0 {
-                                self.album_artwork.insert(filename, bytes);
+                                self.album_artwork.insert(filename, bytes.clone());
+                                self.now_playing_handle = Some(image::Handle::from_bytes(bytes));
                             }
                         }
                     }
