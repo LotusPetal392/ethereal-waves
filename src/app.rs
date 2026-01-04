@@ -9,11 +9,12 @@ use crate::library::MediaMetaData;
 use crate::menu::menu_bar;
 use crate::page::empty_library;
 use crate::page::list_view;
+use crate::page::loading;
 use crate::player::Player;
+use crate::playlist::Playlist;
 use cosmic::iced_widget::scrollable;
 use cosmic::prelude::*;
 use cosmic::{
-    Action,
     app::context_drawer,
     cosmic_config::{self, CosmicConfigEntry},
     cosmic_theme,
@@ -90,13 +91,14 @@ pub struct AppModel {
     pub update_total: f32,
     pub update_percent: f32,
 
-    dragging_progress_slider: bool,
+    initial_load_complete: bool,
 
     player: Player,
 
     pub now_playing: Option<MediaMetaData>,
     pub artwork_dir: Option<PathBuf>,
     album_artwork: HashMap<String, Vec<u8>>,
+    dragging_progress_slider: bool,
 
     size_multiplier: f32,
     pub list_row_height: f32,
@@ -110,6 +112,8 @@ pub struct AppModel {
     shift_pressed: u8,
 
     playlists: Vec<crate::playlist::Playlist>,
+    view_playlist: Option<Playlist>,
+    audio_playlist: Option<Playlist>,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -123,8 +127,6 @@ pub enum Message {
     KeyReleased(Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
-    LibraryLoaded(HashMap<PathBuf, MediaMetaData>),
-    LibraryFailed(String),
     ListSelectRow(String),
     ListViewScroll(scrollable::Viewport),
     Next,
@@ -134,8 +136,6 @@ pub enum Message {
     ReleaseSlider,
     RemoveLibraryPath(String),
     SelectedPaths(Vec<String>),
-    SizeDecrease,
-    SizeIncrease,
     SliderSeek(f32),
     Tick,
     ToggleContextPage(ContextPage),
@@ -146,6 +146,8 @@ pub enum Message {
     UpdateLibrary,
     UpdateProgress(f32, f32, f32),
     WindowResized(Size),
+    ZoomIn,
+    ZoomOut,
 }
 
 /// Create a COSMIC application from the app model
@@ -210,6 +212,7 @@ impl cosmic::Application for AppModel {
             state_handler: _flags.state_handler,
             state: _flags.state.clone(),
             xdg_dirs: xdg::BaseDirectories::with_prefix(Self::APP_ID),
+            initial_load_complete: false,
             library: Library::new(),
             is_updating: false,
             playback_progress: 0.0,
@@ -231,13 +234,15 @@ impl cosmic::Application for AppModel {
             control_pressed: 0,
             shift_pressed: 0,
             playlists: Vec::new(),
+            view_playlist: None,
+            audio_playlist: None,
         };
-
-        // Create a startup task that loads the master library
-        let load_library = app.load_library();
 
         // Create a startup command that sets the window title.
         let update_title = app.update_title();
+
+        // Load the master library and playlists
+        let load_data = app.load_data();
 
         // Build out artwork cache directory
         app.artwork_dir = app.xdg_dirs.get_cache_home();
@@ -245,7 +250,7 @@ impl cosmic::Application for AppModel {
 
         app.update_list_row_height();
 
-        (app, Task::batch([load_library, update_title]))
+        (app, Task::batch([update_title, load_data]))
     }
 
     /// Elements to pack at the start of the header bar.
@@ -284,6 +289,10 @@ impl cosmic::Application for AppModel {
     /// Application events will be processed through the view. Any messages emitted by
     /// events received by widgets will be passed to the update method.
     fn view(&self) -> Element<'_, Self::Message> {
+        if self.initial_load_complete == false {
+            return loading::content();
+        }
+
         let content: Element<_> = match self.nav.active_data::<Page>().unwrap() {
             Page::Library => {
                 if self.library.media.len() == 0 {
@@ -495,14 +504,6 @@ impl cosmic::Application for AppModel {
                 eprintln!("{why}");
             }
 
-            Message::LibraryLoaded(library) => {
-                self.library.media = library;
-            }
-
-            Message::LibraryFailed(err) => {
-                eprintln!("Library failed to load: {:?}", err);
-            }
-
             Message::ListSelectRow(id) => match self.control_pressed {
                 0 => {
                     self.list_selected.clear();
@@ -546,7 +547,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::Previous => {
-                println!("Previous")
+                println!("Previous");
             }
 
             Message::Quit => {
@@ -582,26 +583,6 @@ impl cosmic::Application for AppModel {
                 }
 
                 config_set!(library_paths, library_paths);
-            }
-
-            Message::SizeDecrease => {
-                self.size_multiplier = self.size_multiplier - 2.0;
-                if self.size_multiplier < 4.0 {
-                    self.size_multiplier = 4.0;
-                }
-
-                self.update_list_row_height();
-                state_set!(size_multiplier, self.size_multiplier);
-            }
-
-            Message::SizeIncrease => {
-                self.size_multiplier = self.size_multiplier + 2.0;
-                if self.size_multiplier > 20.0 {
-                    self.size_multiplier = 20.0;
-                }
-
-                self.update_list_row_height();
-                state_set!(size_multiplier, self.size_multiplier);
             }
 
             Message::SliderSeek(time) => {
@@ -826,6 +807,26 @@ impl cosmic::Application for AppModel {
                 state_set!(window_width, window_width);
                 state_set!(window_height, window_height);
             }
+
+            Message::ZoomIn => {
+                self.size_multiplier = self.size_multiplier + 2.0;
+                if self.size_multiplier > 30.0 {
+                    self.size_multiplier = 30.0;
+                }
+
+                self.update_list_row_height();
+                state_set!(size_multiplier, self.size_multiplier);
+            }
+
+            Message::ZoomOut => {
+                self.size_multiplier = self.size_multiplier - 2.0;
+                if self.size_multiplier < 4.0 {
+                    self.size_multiplier = 4.0;
+                }
+
+                self.update_list_row_height();
+                state_set!(size_multiplier, self.size_multiplier);
+            }
         }
         Task::none()
     }
@@ -853,6 +854,8 @@ impl AppModel {
             window_title.push_str(" — ");
             window_title.push_str(page);
         }
+
+        println!("{window_title}");
 
         if let Some(id) = self.core.main_window_id() {
             self.set_window_title(window_title, id)
@@ -959,8 +962,7 @@ impl AppModel {
     pub fn display_playback_progress(&self) -> String {
         let minutes = (self.playback_progress / 60.0) as u32;
         let seconds = f32::trunc(self.playback_progress) as u32 - (minutes * 60);
-        let value = format!("{}:{:02}", minutes, seconds);
-        value
+        format!("{}:{:02}", minutes, seconds)
     }
 
     pub fn display_time_left(&self) -> String {
@@ -1002,28 +1004,80 @@ impl AppModel {
         self.list_row_height = 5.0 * self.size_multiplier;
     }
 
-    pub async fn load_playlists(&mut self) {
-        // Setup library playlist first
-        let mut library_playlist: crate::playlist::Playlist = crate::playlist::Playlist::new();
-        library_playlist.set_name("Library".into());
-        self.library
-            .media
-            .values()
-            .for_each(|v| library_playlist.push(v.id.clone().unwrap()));
+    /// Load library and playlists
+    pub fn load_data(&mut self) -> Task<cosmic::Action<Message>> {
+        println!("Load data");
+        let media: HashMap<PathBuf, MediaMetaData> = match AppModel::load_library(&self.xdg_dirs) {
+            Ok(media) => media,
+            Err(err) => {
+                eprintln!("Failed to load library: {err}");
+                HashMap::new()
+            }
+        };
+        self.library.media = media;
 
-        println!("{:?}", library_playlist.tracks);
+        let playlists: Vec<Playlist> = match AppModel::load_playlists(&self.xdg_dirs, &self.library)
+        {
+            Ok(playlists) => playlists,
+            Err(err) => {
+                eprintln!("Failed to load playlists: {err}");
+                Vec::new()
+            }
+        };
+
+        self.playlists = playlists;
+
+        self.initial_load_complete = true;
+        Task::none()
     }
 
-    /// Loads the master library
-    pub fn load_library(&mut self) -> Task<cosmic::Action<Message>> {
-        let xdg_dirs = self.xdg_dirs.clone();
-        Task::perform(
-            async move { Library::load(xdg_dirs).await },
-            |result| match result {
-                Ok(media) => Action::App(Message::LibraryLoaded(media)),
-                Err(e) => Action::App(Message::LibraryFailed(e.to_string())),
-            },
-        )
+    /// Load library.json file if it exists
+    pub fn load_library(
+        xdg_dirs: &BaseDirectories,
+    ) -> anyhow::Result<HashMap<PathBuf, MediaMetaData>> {
+        let media: HashMap<PathBuf, MediaMetaData> = xdg_dirs
+            .get_data_file("library.json")
+            .map(|path| {
+                let content = fs::read_to_string(path)?;
+                Ok::<_, anyhow::Error>(serde_json::from_str(&content)?)
+            })
+            .transpose()?
+            .unwrap_or_default();
+        Ok(media)
+    }
+
+    /// Load playlist files
+    pub fn load_playlists(
+        xdg_dirs: &BaseDirectories,
+        library: &Library,
+    ) -> anyhow::Result<Vec<Playlist>> {
+        let mut playlists: Vec<Playlist> = Vec::new();
+
+        // The first playlist is always of the master library
+        let mut library_playlist = Playlist::new();
+        library.media.values().for_each(|v| {
+            if v.id.is_some() {
+                library_playlist.push(v.clone().id.unwrap());
+            }
+        });
+        playlists.push(library_playlist);
+
+        // Make sure playlist path exists
+        let playlist_dir = xdg_dirs.get_data_home().unwrap().join("playlist");
+        fs::create_dir_all(&playlist_dir)?;
+
+        // Read in all the json files in the directory
+        for file in fs::read_dir(playlist_dir)? {
+            let file = file?;
+            let file_path = file.path();
+
+            if file_path.extension().and_then(|e| e.to_str()) == Some("json") {
+                let contents = fs::read_to_string(&file_path)?;
+                playlists.push(serde_json::from_str(&contents)?);
+            }
+        }
+
+        Ok(playlists)
     }
 }
 
@@ -1054,8 +1108,8 @@ pub enum MenuAction {
     NewPlaylist,
     Quit,
     Settings,
-    SizeDecrease,
-    SizeIncrease,
+    ZoomIn,
+    ZoomOut,
     UpdateLibrary,
 }
 
@@ -1067,8 +1121,8 @@ impl menu::action::MenuAction for MenuAction {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
             MenuAction::NewPlaylist => Message::NewPlaylist,
             MenuAction::Quit => Message::Quit,
-            MenuAction::SizeDecrease => Message::SizeDecrease,
-            MenuAction::SizeIncrease => Message::SizeIncrease,
+            MenuAction::ZoomIn => Message::ZoomIn,
+            MenuAction::ZoomOut => Message::ZoomOut,
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
             MenuAction::UpdateLibrary => Message::UpdateLibrary,
         }
@@ -1076,6 +1130,7 @@ impl menu::action::MenuAction for MenuAction {
 }
 
 // TODO: Clean this up
+// Saves album artwork to files, no duplicates
 fn cache_image(sample: gst::Sample, xdg_dirs: BaseDirectories) -> Option<String> {
     let buffer = match sample.buffer() {
         Some(b) => b,

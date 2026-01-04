@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use xdg::BaseDirectories;
@@ -27,17 +27,6 @@ impl Library {
         serde_json::to_writer(&mut writer, &self.media)?;
         writer.flush()?;
         Ok(())
-    }
-
-    // Load media from the xdg data directory if it exists
-    pub async fn load(
-        xdg_dirs: BaseDirectories,
-    ) -> Result<HashMap<PathBuf, MediaMetaData>, Box<dyn std::error::Error + Send + Sync>> {
-        let file_path = xdg_dirs.get_data_file("library.json").unwrap();
-        let data = fs::read_to_string(file_path)?;
-        let json: HashMap<PathBuf, MediaMetaData> = serde_json::from_str(&data)?;
-
-        Ok(json)
     }
 
     pub fn from_id(&self, id: String) -> Option<(&PathBuf, &MediaMetaData)> {

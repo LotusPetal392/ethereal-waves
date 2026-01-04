@@ -45,10 +45,11 @@ pub fn footer<'a>(app: &AppModel) -> cosmic::widget::Container<'a, Message, Them
             if app.is_updating {
                 widget::column::with_children(vec![
                     widget::row::with_children(vec![progress_bar.into()]).into(),
-                    widget::row::with_children(vec![
-                        widget::text(format!("{updating_label} {progress_count_display}..."))
-                            .into(),
-                    ])
+                    widget::row::with_children(vec![if app.update_total == 0.0 {
+                        widget::text(fl!("scanning-paths")).into()
+                    } else {
+                        widget::text(format!("{updating_label} {progress_count_display}...")).into()
+                    }])
                     .into(),
                 ])
                 .padding(space_xs)

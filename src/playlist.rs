@@ -1,6 +1,8 @@
+use crate::library::MediaMetaData;
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fmt, path::PathBuf};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Playlist {
     id: u32,
     name: String,
@@ -38,5 +40,15 @@ impl Playlist {
 
     pub fn remove(&mut self, index: usize) {
         self.tracks.remove(index);
+    }
+}
+
+impl fmt::Debug for Playlist {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Playlist {{ id: {}, name: {}, tracks: {:?} }}",
+            self.id, self.name, self.tracks
+        )
     }
 }

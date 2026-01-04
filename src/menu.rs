@@ -37,8 +37,8 @@ pub fn menu_bar<'a>(
             menu::items(
                 key_binds,
                 vec![
-                    menu::Item::Button(fl!("size-increase"), None, MenuAction::SizeIncrease),
-                    menu::Item::Button(fl!("size-decrease"), None, MenuAction::SizeDecrease),
+                    menu::Item::Button(fl!("zoom-in"), None, MenuAction::ZoomIn),
+                    menu::Item::Button(fl!("zoom-out"), None, MenuAction::ZoomOut),
                     menu::Item::Divider,
                     menu::Item::Button(fl!("settings-menu"), None, MenuAction::Settings),
                     menu::Item::Divider,
