@@ -20,12 +20,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
     } = theme::active().cosmic().spacing;
 
     let progress_bar_height = Length::Fixed(4.0);
-    let progress_count_display = format!(
-        "{}/{} ({:.0}%)",
-        app.update_progress, app.update_total, app.update_percent
-    );
-    let updating_label = fl!("updating-library");
-    let artwork_size = 75;
+    let artwork_size = 85;
     let now_playing = app.now_playing.clone().unwrap_or(MediaMetaData::new());
 
     // Main content container
@@ -39,7 +34,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
             .push(widget::text(if app.update_progress == 0.0 {
                 fl!("scanning-paths")
             } else {
-                format!("{updating_label} {progress_count_display}...")
+                app.update_progress_display.to_string()
             }))
             .push(widget::vertical_space().height(space_xxs));
 

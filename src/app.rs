@@ -90,6 +90,7 @@ pub struct AppModel {
     pub update_progress: f32,
     pub update_total: f32,
     pub update_percent: f32,
+    pub update_progress_display: String,
 
     initial_load_complete: bool,
 
@@ -220,6 +221,7 @@ impl cosmic::Application for AppModel {
             update_progress: 0.0,
             update_total: 0.0,
             update_percent: 0.0,
+            update_progress_display: "0".into(),
             dragging_progress_slider: false,
             player: Player::new(),
             now_playing: None,
@@ -248,7 +250,7 @@ impl cosmic::Application for AppModel {
 
         // Build out artwork cache directory
         app.artwork_dir = app.xdg_dirs.get_cache_home();
-        app.artwork_dir = Some(app.artwork_dir.unwrap().join("artwork"));
+        app.artwork_dir = app.artwork_dir.map(|p| p.join("artwork"));
 
         app.update_list_row_height();
 
@@ -487,7 +489,7 @@ impl cosmic::Application for AppModel {
                     }
                 }
                 if key == Key::Named(Named::Control) {
-                    self.control_pressed = self.control_pressed + 1;
+                    self.control_pressed += 1;
                 }
                 if key == Key::Named(Named::Shift) {
                     self.shift_pressed = self.shift_pressed + 1;
@@ -496,7 +498,7 @@ impl cosmic::Application for AppModel {
 
             Message::KeyReleased(key) => {
                 if key == Key::Named(Named::Control) {
-                    self.control_pressed = self.control_pressed - 1;
+                    self.control_pressed -= 1;
                 }
                 if key == Key::Named(Named::Shift) {
                     self.shift_pressed = self.shift_pressed - 1;
@@ -652,7 +654,6 @@ impl cosmic::Application for AppModel {
             }
 
             Message::UpdateLibrary => {
-                // TODO: Clean this up
                 if self.is_updating {
                     return Task::none();
                 }
@@ -707,8 +708,9 @@ impl cosmic::Application for AppModel {
                     };
 
                     let mut update_progress: f32 = 0.0;
-                    let mut update_percent_old: f32 = 0.0;
                     let update_total: f32 = library.media.len() as f32;
+                    let mut last_update = std::time::Instant::now();
+                    let update_interval = std::time::Duration::from_millis(100);
 
                     library.media.iter_mut().for_each(|(file, track_metadata)| {
                         let file_str = match file.to_str() {
@@ -718,9 +720,13 @@ impl cosmic::Application for AppModel {
 
                         let uri = Url::from_file_path(file_str).unwrap();
 
-                        let info = discoverer
-                            .discover_uri(&uri.as_str())
-                            .expect("Cannot read file.");
+                        let info = match discoverer.discover_uri(&uri.as_str()) {
+                            Ok(info) => info,
+                            Err(err) => {
+                                eprintln!("Failed to read metadata from {}: {}", file_str, err);
+                                return; // Skip this file and move on
+                            }
+                        };
 
                         track_metadata.id = Some(digest(file_str));
 
@@ -777,20 +783,22 @@ impl cosmic::Application for AppModel {
                         }
 
                         // Update progress bar
-                        update_progress = update_progress + 1.0;
-                        if update_percent_old != (update_progress / update_total * 100.0).round() {
+                        update_progress += 1.0;
+                        let now = std::time::Instant::now();
+                        if now.duration_since(last_update) >= update_interval {
                             _ = tx.send(Message::UpdateProgress(
                                 update_progress,
                                 update_total,
-                                (update_progress / update_total * 100.0).round(),
+                                update_progress / update_total * 100.0,
                             ));
+                            last_update = now;
                         }
-                        update_percent_old = (update_progress / update_total * 100.0).round();
                     });
 
-                    _ = tx.send(Message::UpdateProgress(update_total, update_total, 100.0));
+                    // Remove anything without an id
+                    library.media.retain(|_, v| v.id.is_some());
 
-                    std::thread::sleep(tokio::time::Duration::from_secs(1));
+                    _ = tx.send(Message::UpdateProgress(update_total, update_total, 100.0));
                     _ = tx.send(Message::UpdateComplete(library));
                 });
 
@@ -802,6 +810,13 @@ impl cosmic::Application for AppModel {
                 self.update_progress = update_progress;
                 self.update_total = update_total;
                 self.update_percent = percent;
+                self.update_progress_display = format!(
+                    "{} {}/{} ({:.2}%)",
+                    fl!("updating-library"),
+                    update_progress,
+                    update_total,
+                    percent
+                )
             }
 
             Message::WindowResized(size) => {
@@ -999,9 +1014,9 @@ impl AppModel {
         Ok(bytes)
     }
 
-    pub fn get_artwork(&self, filename: String) -> Option<&Vec<u8>> {
-        self.album_artwork.get(&filename)
-    }
+    // pub fn get_artwork(&self, filename: String) -> Option<&Vec<u8>> {
+    //     self.album_artwork.get(&filename)
+    // }
 
     pub fn update_list_row_height(&mut self) {
         self.list_row_height = 5.0 * self.size_multiplier;
@@ -1038,7 +1053,7 @@ impl AppModel {
     pub fn load_library(
         xdg_dirs: &BaseDirectories,
     ) -> anyhow::Result<HashMap<PathBuf, MediaMetaData>> {
-        let media: HashMap<PathBuf, MediaMetaData> = xdg_dirs
+        let mut media: HashMap<PathBuf, MediaMetaData> = xdg_dirs
             .get_data_file("library.json")
             .map(|path| {
                 let content = fs::read_to_string(path)?;
@@ -1046,6 +1061,10 @@ impl AppModel {
             })
             .transpose()?
             .unwrap_or_default();
+
+        // Remove any entry without an id
+        media.retain(|_, v| v.id.is_some());
+
         Ok(media)
     }
 

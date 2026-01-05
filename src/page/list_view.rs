@@ -5,8 +5,7 @@ use cosmic::iced_core::text::Wrapping;
 use cosmic::{
     Element, cosmic_theme,
     iced::{Alignment, Color, Length},
-    theme,
-    widget::{self, Column, Row},
+    theme, widget,
 };
 use std::path::PathBuf;
 
@@ -17,14 +16,14 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
         ..
     } = theme::active().cosmic().spacing;
 
-    let mut content = Column::new();
+    let mut content = widget::column();
 
     let chars: f32 = app.library.media.len().to_string().len() as f32;
     let number_column_width: f32 = chars * 13.0;
 
     // Header row
     content = content.push(
-        Row::new()
+        widget::row()
             .spacing(space_xxs)
             .push(widget::horizontal_space().width(space_xxxs / 2))
             .push(
@@ -40,7 +39,7 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
     content = content.push(widget::divider::horizontal::default());
 
     // Row data for each file
-    let mut rows = Column::new();
+    let mut rows = widget::column();
     rows = rows.push(widget::vertical_space().height(Length::Fixed(
         app.list_start as f32 * (app.list_row_height + 1.0),
     )));
@@ -59,12 +58,12 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
         Wrapping::None
     };
 
-    for (_, metadata) in media.get(app.list_start..(list_end)).unwrap_or(&[]) {
+    for (path, metadata) in media.get(app.list_start..(list_end)).unwrap_or(&[]) {
         let id = metadata.id.clone().unwrap();
 
         let row = widget::mouse_area(
             widget::button::custom(
-                Row::new()
+                widget::row()
                     .spacing(space_xxs)
                     .height(Length::Fixed(app.list_row_height))
                     .push(
@@ -77,9 +76,11 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
                     )
                     .push(
                         widget::container(
-                            widget::text(metadata.title.as_deref().unwrap_or(""))
-                                .wrapping(wrapping)
-                                .width(Length::FillPortion(1)),
+                            widget::text(
+                                metadata.title.as_deref().unwrap_or(path.to_str().unwrap()),
+                            )
+                            .wrapping(wrapping)
+                            .width(Length::FillPortion(1)),
                         )
                         .clip(true),
                     )
@@ -120,7 +121,7 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
     let viewport_height = (app.list_row_height + 1.0) * app.library.media.len() as f32 - 1.0;
 
     // Vertical shim on left side the height of rows + horizontal rules
-    let scrollable_contents = Row::new()
+    let scrollable_contents = widget::row()
         .push(widget::vertical_space().height(Length::Fixed(viewport_height)))
         .push(widget::horizontal_space().width(space_xxs))
         .push(rows)
