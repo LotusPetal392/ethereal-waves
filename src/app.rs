@@ -701,18 +701,25 @@ impl cosmic::Application for AppModel {
                     // Get metadata
                     gst::init().unwrap();
 
-                    let discoverer = match pbutils::Discoverer::new(gst::ClockTime::from_seconds(5))
-                    {
-                        Ok(discoverer) => discoverer,
-                        Err(error) => panic!("Failed to create discoverer: {:?}", error),
-                    };
+                    use std::sync::{Arc, Mutex};
+                    let update_progress = Arc::new(Mutex::new(0.0f32));
+                    let last_update = Arc::new(Mutex::new(std::time::Instant::now()));
 
-                    let mut update_progress: f32 = 0.0;
                     let update_total: f32 = library.media.len() as f32;
-                    let mut last_update = std::time::Instant::now();
                     let update_interval = std::time::Duration::from_millis(100);
 
-                    library.media.iter_mut().for_each(|(file, track_metadata)| {
+                    let mut entries: Vec<(PathBuf, MediaMetaData)> =
+                        library.media.into_iter().collect();
+
+                    use rayon::prelude::*;
+
+                    entries.par_iter_mut().for_each(|(file, track_metadata)| {
+                        let discoverer =
+                            match pbutils::Discoverer::new(gst::ClockTime::from_seconds(5)) {
+                                Ok(discoverer) => discoverer,
+                                Err(error) => panic!("Failed to create discoverer: {:?}", error),
+                            };
+
                         let file_str = match file.to_str() {
                             Some(file_str) => file_str,
                             None => "",
@@ -783,17 +790,26 @@ impl cosmic::Application for AppModel {
                         }
 
                         // Update progress bar
-                        update_progress += 1.0;
+                        let mut progress = update_progress.lock().unwrap();
+                        *progress += 1.0;
+                        let current_progress = *progress;
+                        drop(progress);
+
                         let now = std::time::Instant::now();
-                        if now.duration_since(last_update) >= update_interval {
+                        let mut last = last_update.lock().unwrap();
+                        if now.duration_since(*last) >= update_interval {
+                            *last = now;
+                            drop(last);
                             _ = tx.send(Message::UpdateProgress(
-                                update_progress,
+                                current_progress,
                                 update_total,
-                                update_progress / update_total * 100.0,
+                                current_progress / update_total * 100.0,
                             ));
-                            last_update = now;
                         }
                     });
+
+                    // Convert back to HashMap
+                    library.media = entries.into_iter().collect();
 
                     // Remove anything without an id
                     library.media.retain(|_, v| v.id.is_some());
