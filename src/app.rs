@@ -133,6 +133,7 @@ pub enum Message {
     ListViewScroll(scrollable::Viewport),
     Next,
     NewPlaylist,
+    PeriodicLibraryUpdate(HashMap<PathBuf, MediaMetaData>),
     Previous,
     Quit,
     ReleaseSlider,
@@ -152,6 +153,9 @@ pub enum Message {
     ZoomOut,
 }
 
+/// Unique identifier in RDNN (reverse domain name notation) format.
+pub const APP_ID: &'static str = "com.github.LotusPetal392.ethereal-waves";
+
 /// Create a COSMIC application from the app model
 impl cosmic::Application for AppModel {
     /// The async executor that will be used to run your application's commands.
@@ -163,9 +167,6 @@ impl cosmic::Application for AppModel {
     /// Messages which the application and its widgets will emit.
     type Message = Message;
 
-    /// Unique identifier in RDNN (reverse domain name notation) format.
-    const APP_ID: &'static str = "com.github.LotusPetal392.ethereal-waves";
-
     fn core(&self) -> &cosmic::Core {
         &self.core
     }
@@ -173,6 +174,9 @@ impl cosmic::Application for AppModel {
     fn core_mut(&mut self) -> &mut cosmic::Core {
         &mut self.core
     }
+
+    /// Unique identifier in RDNN (reverse domain name notation) format.
+    const APP_ID: &'static str = APP_ID;
 
     /// Initializes the application with any given flags and startup commands.
     fn init(
@@ -203,7 +207,7 @@ impl cosmic::Application for AppModel {
             about,
             nav,
             key_binds: key_binds(),
-            config: cosmic_config::Config::new(Self::APP_ID, CONFIG_VERSION)
+            config: cosmic_config::Config::new(APP_ID, CONFIG_VERSION)
                 .map(|context| match Config::get_entry(&context) {
                     Ok(config) => config,
                     Err((_errors, config)) => config,
@@ -213,7 +217,7 @@ impl cosmic::Application for AppModel {
             config_handler: _flags.config_handler,
             state_handler: _flags.state_handler,
             state: _flags.state.clone(),
-            xdg_dirs: xdg::BaseDirectories::with_prefix(Self::APP_ID),
+            xdg_dirs: xdg::BaseDirectories::with_prefix(APP_ID),
             initial_load_complete: false,
             library: Library::new(),
             is_updating: false,
@@ -338,20 +342,18 @@ impl cosmic::Application for AppModel {
                 _ => None,
             }),
             // Watch for application configuration changes.
-            self.core()
-                .watch_config::<Config>(Self::APP_ID)
-                .map(|update| {
-                    // for why in update.errors {
-                    //     tracing::error!(?why, "app config error");
-                    // }
+            self.core().watch_config::<Config>(APP_ID).map(|update| {
+                // for why in update.errors {
+                //     tracing::error!(?why, "app config error");
+                // }
 
-                    Message::UpdateConfig(update.config)
-                }),
+                Message::UpdateConfig(update.config)
+            }),
         ];
 
         if self.now_playing.is_some() {
             subscriptions
-                .push(iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick));
+                .push(iced::time::every(Duration::from_millis(100)).map(|_| Message::Tick));
         }
 
         Subscription::batch(subscriptions)
@@ -488,20 +490,20 @@ impl cosmic::Application for AppModel {
                         return self.update(action.message());
                     }
                 }
-                if key == Key::Named(Named::Control) {
+                if key == Key::Named(Named::Control) && self.control_pressed < 2 {
                     self.control_pressed += 1;
                 }
-                if key == Key::Named(Named::Shift) {
-                    self.shift_pressed = self.shift_pressed + 1;
+                if key == Key::Named(Named::Shift) && self.shift_pressed < 2 {
+                    self.shift_pressed += 1;
                 }
             }
 
             Message::KeyReleased(key) => {
                 if key == Key::Named(Named::Control) {
-                    self.control_pressed -= 1;
+                    self.control_pressed = self.control_pressed.saturating_sub(1);
                 }
                 if key == Key::Named(Named::Shift) {
-                    self.shift_pressed = self.shift_pressed - 1;
+                    self.shift_pressed = self.shift_pressed.saturating_sub(1);
                 }
             }
 
@@ -549,6 +551,11 @@ impl cosmic::Application for AppModel {
 
             Message::Next => {
                 println!("Next");
+            }
+
+            Message::PeriodicLibraryUpdate(media) => {
+                self.library.media = media;
+                let _ = self.library.save();
             }
 
             Message::Previous => {
@@ -642,7 +649,7 @@ impl cosmic::Application for AppModel {
 
             Message::UpdateComplete(library) => {
                 self.library = library;
-                match self.library.save(self.xdg_dirs.clone()) {
+                match self.library.save() {
                     Ok(_) => {}
                     Err(e) => eprintln!("There was an error saving library data: {e}"),
                 };
@@ -701,19 +708,21 @@ impl cosmic::Application for AppModel {
                     // Get metadata
                     gst::init().unwrap();
 
-                    use std::sync::{Arc, Mutex};
-                    let update_progress = Arc::new(Mutex::new(0.0f32));
-                    let last_update = Arc::new(Mutex::new(std::time::Instant::now()));
-
+                    let mut update_progress: f32 = 0.0;
                     let update_total: f32 = library.media.len() as f32;
-                    let update_interval = std::time::Duration::from_millis(100);
+
+                    let mut last_progress_update: Instant = std::time::Instant::now();
+                    let update_progress_interval: Duration = std::time::Duration::from_millis(200);
+
+                    let mut last_library_update: Instant = std::time::Instant::now();
+                    let update_library_interval: Duration = std::time::Duration::from_secs(10);
 
                     let mut entries: Vec<(PathBuf, MediaMetaData)> =
                         library.media.into_iter().collect();
 
-                    use rayon::prelude::*;
+                    let mut completed_entries: HashMap<PathBuf, MediaMetaData> = HashMap::new();
 
-                    entries.par_iter_mut().for_each(|(file, track_metadata)| {
+                    entries.iter_mut().for_each(|(file, track_metadata)| {
                         let discoverer =
                             match pbutils::Discoverer::new(gst::ClockTime::from_seconds(5)) {
                                 Ok(discoverer) => discoverer,
@@ -789,22 +798,25 @@ impl cosmic::Application for AppModel {
                             track_metadata.title = Some(file.to_string_lossy().to_string());
                         }
 
-                        // Update progress bar
-                        let mut progress = update_progress.lock().unwrap();
-                        *progress += 1.0;
-                        let current_progress = *progress;
-                        drop(progress);
+                        completed_entries.insert(file.clone(), track_metadata.clone());
 
+                        // Update progress bar
+                        // let mut progress: f32 = update_progress;
+                        update_progress += 1.0;
                         let now = std::time::Instant::now();
-                        let mut last = last_update.lock().unwrap();
-                        if now.duration_since(*last) >= update_interval {
-                            *last = now;
-                            drop(last);
+                        if now.duration_since(last_progress_update) >= update_progress_interval {
+                            last_progress_update = now;
                             _ = tx.send(Message::UpdateProgress(
-                                current_progress,
+                                update_progress,
                                 update_total,
-                                current_progress / update_total * 100.0,
+                                update_progress / update_total * 100.0,
                             ));
+                        }
+
+                        // Send periodic library updates
+                        if now.duration_since(last_library_update) >= update_library_interval {
+                            last_library_update = now;
+                            _ = tx.send(Message::PeriodicLibraryUpdate(completed_entries.clone()));
                         }
                     });
 
@@ -932,7 +944,7 @@ impl AppModel {
                 .width(Length::Fill),
         );
 
-        let library_paths_length = self.config.library_paths.len() - 1;
+        let library_paths_length = self.config.library_paths.len().saturating_sub(1);
 
         // Create library path rows
         for (i, path) in self.config.library_paths.iter().enumerate() {

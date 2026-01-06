@@ -24,7 +24,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
     let now_playing = app.now_playing.clone().unwrap_or(MediaMetaData::new());
 
     // Main content container
-    let mut content = widget::column().padding(space_xxs);
+    let mut content = widget::column().padding(space_xs);
 
     // Update progress area
     if app.is_updating {
@@ -36,7 +36,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
             } else {
                 app.update_progress_display.to_string()
             }))
-            .push(widget::vertical_space().height(space_xxs));
+            .push(widget::vertical_space().height(space_xs));
 
         content = content.push(updating_col);
     }

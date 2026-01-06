@@ -60,6 +60,10 @@ check-json: (check '--message-format=json')
 run *args:
     env RUST_BACKTRACE=full cargo run --release {{args}}
 
+# Run with dev profile
+run-dev:
+    cargo run
+
 # Installs files
 install:
     install -Dm0755 {{ cargo-target-dir / 'release' / name }} {{bin-dst}}
@@ -93,4 +97,3 @@ tag version:
     git commit -m 'release: {{version}}'
     git commit --amend
     git tag -a {{version}} -m ''
-
