@@ -28,11 +28,11 @@ use cosmic::{
     },
     theme,
     widget::{
-        self, Column, Row,
+        self,
         about::About,
-        icon, image,
+        button, column, container, divider, dropdown, icon, image,
         menu::{self, Action as WidgetMenuAction},
-        nav_bar, toggler,
+        nav_bar, row, settings, text, toggler,
     },
 };
 use gst::prelude::ElementExt;
@@ -195,7 +195,7 @@ impl cosmic::Application for AppModel {
         // Create the about widget
         let about = About::default()
             .name(fl!("app-title"))
-            .icon(widget::icon::from_svg_bytes(APP_ICON))
+            .icon(icon::from_svg_bytes(APP_ICON))
             .version(env!("CARGO_PKG_VERSION"))
             .links([(fl!("repository"), REPOSITORY)])
             .license(env!("CARGO_PKG_LICENSE"));
@@ -311,8 +311,8 @@ impl cosmic::Application for AppModel {
             }
         };
 
-        widget::container(widget::column::with_children(vec![content]))
-            .apply(widget::container)
+        container(column().push(content))
+            .apply(container)
             .height(Length::Fill)
             .width(Length::Fill)
             .align_x(Horizontal::Center)
@@ -919,25 +919,19 @@ impl AppModel {
             AppTheme::System => 0,
         };
 
-        let mut library_column = Column::new();
+        let mut library_column = column();
 
         library_column = library_column.push(
-            Row::new()
+            row()
                 .push(
-                    Column::new()
-                        .push(
-                            widget::button::text(fl!("add-location"))
-                                .on_press(Message::AddLibraryDialog),
-                        )
+                    column()
+                        .push(button::text(fl!("add-location")).on_press(Message::AddLibraryDialog))
                         .width(Length::FillPortion(1))
                         .align_x(Alignment::Start),
                 )
                 .push(
-                    Column::new()
-                        .push(
-                            widget::button::text(fl!("update-library"))
-                                .on_press(Message::UpdateLibrary),
-                        )
+                    column()
+                        .push(button::text(fl!("update-library")).on_press(Message::UpdateLibrary))
                         .width(Length::FillPortion(1))
                         .align_x(Alignment::End),
                 )
@@ -949,28 +943,28 @@ impl AppModel {
         // Create library path rows
         for (i, path) in self.config.library_paths.iter().enumerate() {
             library_column = library_column.push(
-                Row::new()
+                row()
                     .width(Length::Fill)
                     .padding(space_xxs)
                     // Adds text
-                    .push(widget::text::text(path.clone()).width(Length::FillPortion(1)))
+                    .push(text::text(path.clone()).width(Length::FillPortion(1)))
                     // Adds delete button
                     .push(
-                        widget::button::icon(widget::icon::from_name("window-close-symbolic"))
+                        button::icon(icon::from_name("window-close-symbolic"))
                             .on_press(Message::RemoveLibraryPath(path.clone())),
                     ),
             );
 
             if i < library_paths_length {
-                library_column = library_column.push(widget::divider::horizontal::light());
+                library_column = library_column.push(divider::horizontal::light());
             }
         }
 
-        widget::settings::view_column(vec![
-            widget::settings::section()
+        settings::view_column(vec![
+            settings::section()
                 .title(fl!("appearance"))
                 .add({
-                    widget::settings::item::builder(fl!("theme")).control(widget::dropdown(
+                    widget::settings::item::builder(fl!("theme")).control(dropdown(
                         &self.app_theme_labels,
                         Some(app_theme_selected),
                         move |index| {
@@ -983,15 +977,15 @@ impl AppModel {
                     ))
                 })
                 .into(),
-            widget::settings::section()
+            settings::section()
                 .title(fl!("list-view"))
                 .add({
-                    widget::settings::item::builder(fl!("wrap-text")).control(
+                    settings::item::builder(fl!("wrap-text")).control(
                         toggler(self.config.list_text_wrap).on_toggle(Message::ToggleListTextWrap),
                     )
                 })
                 .into(),
-            widget::settings::section()
+            settings::section()
                 .title(fl!("library"))
                 .add(library_column)
                 .into(),

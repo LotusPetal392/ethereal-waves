@@ -5,7 +5,11 @@ use cosmic::iced_core::text::Wrapping;
 use cosmic::{
     Element, cosmic_theme,
     iced::{Alignment, Color, Length},
-    theme, widget,
+    theme,
+    widget::{
+        button, column, container, divider, horizontal_space, mouse_area, row, scrollable, text,
+        vertical_space,
+    },
 };
 use std::path::PathBuf;
 
@@ -16,31 +20,31 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
         ..
     } = theme::active().cosmic().spacing;
 
-    let mut content = widget::column();
+    let mut content = column();
 
     let chars: f32 = app.library.media.len().to_string().len() as f32;
     let number_column_width: f32 = chars * 13.0;
 
     // Header row
     content = content.push(
-        widget::row()
+        row()
             .spacing(space_xxs)
-            .push(widget::horizontal_space().width(space_xxxs / 2))
+            .push(horizontal_space().width(space_xxxs / 2))
             .push(
-                widget::text::heading("#")
+                text::heading("#")
                     .align_x(Alignment::End)
                     .width(Length::Fixed(number_column_width)),
             )
-            .push(widget::text::heading(fl!("title")).width(Length::FillPortion(1)))
-            .push(widget::text::heading(fl!("album")).width(Length::FillPortion(1)))
-            .push(widget::text::heading(fl!("artist")).width(Length::FillPortion(1)))
-            .push(widget::horizontal_space().width(space_xxxs / 2)),
+            .push(text::heading(fl!("title")).width(Length::FillPortion(1)))
+            .push(text::heading(fl!("album")).width(Length::FillPortion(1)))
+            .push(text::heading(fl!("artist")).width(Length::FillPortion(1)))
+            .push(horizontal_space().width(space_xxxs / 2)),
     );
-    content = content.push(widget::divider::horizontal::default());
+    content = content.push(divider::horizontal::default());
 
     // Row data for each file
-    let mut rows = widget::column();
-    rows = rows.push(widget::vertical_space().height(Length::Fixed(
+    let mut rows = column();
+    rows = rows.push(vertical_space().height(Length::Fixed(
         app.list_start as f32 * (app.list_row_height + 1.0),
     )));
 
@@ -61,40 +65,38 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
     for (path, metadata) in media.get(app.list_start..(list_end)).unwrap_or(&[]) {
         let id = metadata.id.clone().unwrap();
 
-        let row = widget::mouse_area(
-            widget::button::custom(
-                widget::row()
+        let row = mouse_area(
+            button::custom(
+                row()
                     .spacing(space_xxs)
                     .height(Length::Fixed(app.list_row_height))
                     .push(
-                        widget::container(
-                            widget::text(format!("{}", count))
+                        container(
+                            text(format!("{}", count))
                                 .width(Length::Fixed(number_column_width))
                                 .align_x(Alignment::End),
                         )
                         .clip(true),
                     )
                     .push(
-                        widget::container(
-                            widget::text(
-                                metadata.title.as_deref().unwrap_or(path.to_str().unwrap()),
-                            )
-                            .wrapping(wrapping)
-                            .width(Length::FillPortion(1)),
-                        )
-                        .clip(true),
-                    )
-                    .push(
-                        widget::container(
-                            widget::text(metadata.album.as_deref().unwrap_or(""))
+                        container(
+                            text(metadata.title.as_deref().unwrap_or(path.to_str().unwrap()))
                                 .wrapping(wrapping)
                                 .width(Length::FillPortion(1)),
                         )
                         .clip(true),
                     )
                     .push(
-                        widget::container(
-                            widget::text(metadata.artist.as_deref().unwrap_or(""))
+                        container(
+                            text(metadata.album.as_deref().unwrap_or(""))
+                                .wrapping(wrapping)
+                                .width(Length::FillPortion(1)),
+                        )
+                        .clip(true),
+                    )
+                    .push(
+                        container(
+                            text(metadata.artist.as_deref().unwrap_or(""))
                                 .wrapping(wrapping)
                                 .width(Length::FillPortion(1)),
                         )
@@ -112,7 +114,7 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
 
         rows = rows.push(row);
         if count < app.library.media.len() as u32 {
-            rows = rows.push(widget::divider::horizontal::default());
+            rows = rows.push(divider::horizontal::default());
         }
 
         count = count + 1;
@@ -121,13 +123,13 @@ pub fn content(app: &AppModel) -> Element<'_, Message> {
     let viewport_height = (app.list_row_height + 1.0) * app.library.media.len() as f32 - 1.0;
 
     // Vertical shim on left side the height of rows + horizontal rules
-    let scrollable_contents = widget::row()
-        .push(widget::vertical_space().height(Length::Fixed(viewport_height)))
-        .push(widget::horizontal_space().width(space_xxs))
+    let scrollable_contents = row()
+        .push(vertical_space().height(Length::Fixed(viewport_height)))
+        .push(horizontal_space().width(space_xxs))
         .push(rows)
-        .push(widget::horizontal_space().width(space_xxs));
+        .push(horizontal_space().width(space_xxs));
 
-    let scroller = widget::scrollable(scrollable_contents)
+    let scroller = scrollable(scrollable_contents)
         .width(Length::Fill)
         .on_scroll(|viewport| Message::ListViewScroll(viewport));
 
@@ -145,9 +147,9 @@ fn button_style(selected: bool) -> theme::Button {
     }
 }
 
-fn button_appearance(theme: &theme::Theme, selected: bool, hovered: bool) -> widget::button::Style {
+fn button_appearance(theme: &theme::Theme, selected: bool, hovered: bool) -> button::Style {
     let cosmic = theme.cosmic();
-    let mut appearance = widget::button::Style::new();
+    let mut appearance = button::Style::new();
 
     if selected {
         appearance.background = Some(Color::from(cosmic.accent_color()).into());
