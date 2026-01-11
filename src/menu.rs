@@ -16,7 +16,12 @@ pub fn menu_bar<'a>(
             menu::items(
                 key_binds,
                 vec![
-                    menu::Item::Button(fl!("new-playlist"), None, MenuAction::NewPlaylist),
+                    menu::Item::Button(fl!("new-playlist-menu"), None, MenuAction::NewPlaylist),
+                    menu::Item::Button(
+                        fl!("rename-playlist-menu"),
+                        None,
+                        MenuAction::RenamePlaylist,
+                    ),
                     menu::Item::Divider,
                     if is_updating {
                         menu::Item::ButtonDisabled(

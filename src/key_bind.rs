@@ -1,5 +1,5 @@
 use cosmic::{
-    iced::keyboard::Key,
+    iced::keyboard::{Key, key::Named},
     widget::menu::key_bind::{KeyBind, Modifier},
 };
 use std::collections::HashMap;
@@ -27,6 +27,7 @@ pub fn key_binds() -> HashMap<KeyBind, MenuAction> {
     bind!([Ctrl], Key::Character("-".into()), ZoomOut);
     bind!([Ctrl], Key::Character("=".into()), ZoomIn);
     bind!([Ctrl], Key::Character("n".into()), NewPlaylist);
+    bind!([], Key::Named(Named::F2), RenamePlaylist);
 
     key_binds
 }

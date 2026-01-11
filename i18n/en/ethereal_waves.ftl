@@ -1,35 +1,50 @@
 app-title = Ethereal Waves
 about = About
 repository = Repository
-view = View
 git-description = Git commit {$hash} on {$date}
-file = File
+
 new-playlist = New Playlist
+library = Library
+update-library = Update Library
+updating-library = Updating Library
+scanning-paths = Scanning paths...
+loading = Loading...
+untitled-playlist = Untitled Playlist
+
+# Menu
+file = File
+new-playlist-menu = New Playlist...
+rename-playlist-menu = Rename Playlist...
+view = View
 zoom-in = Zoom In
 zoom-out = Zoom Out
 quit = Quit
 about-ethereal-waves = About Ethereal Waves...
 settings-menu = Settings...
-settings = Settings
-appearance = Appearance
-theme = Theme
-library = Library
-add-location = Add Location
-update-library = Update Library
-updating-library = Updating Library
-wrap-text = Wrap Text
-list-view = List View
-scanning-paths = Scanning paths...
-loading = Loading...
 
+# Dialog
+ok = Ok
+cancel = Cancel
+create-new-playlist = Create New Playlist
+playlist-name = Playlist name
+create = Create
+
+# Settings
 match-desktop = Match Desktop
 dark = Dark
 light = Light
+wrap-text = Wrap Text
+list-view = List View
+settings = Settings
+appearance = Appearance
+theme = Theme
+add-location = Add Location
 
 number = #
 title = Title
 album = Album
 artist = Artist
 
+# Empty library page
 go-to-view = Go to View /
 then-update-library =  / Library to add music. Then update your library!

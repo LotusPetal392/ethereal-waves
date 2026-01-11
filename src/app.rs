@@ -28,9 +28,8 @@ use cosmic::{
     },
     theme,
     widget::{
-        self,
+        self, Column,
         about::About,
-        button, column, container, divider, dropdown, icon, image,
         menu::{self, Action as WidgetMenuAction},
         nav_bar, row, settings, text, toggler,
     },
@@ -41,7 +40,7 @@ use gstreamer as gst;
 use gstreamer_pbutils as pbutils;
 use sha256::digest;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     error::Error,
     fs::{self, File},
     io::Write,
@@ -66,7 +65,7 @@ pub struct AppModel {
     core: cosmic::Core,
     /// Display a context drawer with the designated page if defined.
     context_page: ContextPage,
-    /// The about page for this app.
+    /// The about page this app.
     about: About,
     /// Contains items assigned to the nav bar panel.
     nav: nav_bar::Model,
@@ -96,8 +95,10 @@ pub struct AppModel {
 
     player: Player,
 
+    dialog_pages: DialogPages,
+
     pub now_playing: Option<MediaMetaData>,
-    pub now_playing_handle: Option<image::Handle>,
+    pub now_playing_handle: Option<widget::image::Handle>,
     pub artwork_dir: Option<PathBuf>,
     album_artwork: HashMap<String, Vec<u8>>,
     dragging_progress_slider: bool,
@@ -113,31 +114,36 @@ pub struct AppModel {
     control_pressed: u8,
     shift_pressed: u8,
 
-    playlists: Vec<crate::playlist::Playlist>,
-    view_playlist: Option<Playlist>,
-    audio_playlist: Option<Playlist>,
+    pub playlists: Vec<crate::playlist::Playlist>,
+    pub view_playlist: Option<u32>,
+    audio_playlist: Option<u32>,
 }
 
 /// Messages emitted by the application and its widgets.
 #[derive(Debug, Clone)]
 pub enum Message {
+    AddLibraryCancel,
     AddLibraryDialog,
     AppTheme(AppTheme),
-    Cancelled,
     ChangeTrack(String),
+    CreateNewPlaylist(String),
+    DeletePlaylist(String),
+    DialogCancel,
+    DialogComplete,
     KeyPressed(Modifiers, Key),
     KeyReleased(Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
     ListSelectRow(String),
     ListViewScroll(scrollable::Viewport),
-    Next,
     NewPlaylist,
+    Next,
     PeriodicLibraryUpdate(HashMap<PathBuf, MediaMetaData>),
     Previous,
     Quit,
     ReleaseSlider,
     RemoveLibraryPath(String),
+    RenamePlaylist,
     SelectedPaths(Vec<String>),
     SliderSeek(f32),
     Tick,
@@ -146,6 +152,7 @@ pub enum Message {
     TogglePlaying,
     UpdateComplete(Library),
     UpdateConfig(Config),
+    UpdateDialog(DialogPage),
     UpdateLibrary,
     UpdateProgress(f32, f32, f32),
     WindowResized(Size),
@@ -189,13 +196,13 @@ impl cosmic::Application for AppModel {
         nav.insert()
             .text(fl!("library"))
             .data::<Page>(Page::Library)
-            .icon(icon::from_name("folder-music-symbolic"))
+            .icon(widget::icon::from_name("folder-music-symbolic"))
             .activate();
 
         // Create the about widget
         let about = About::default()
             .name(fl!("app-title"))
-            .icon(icon::from_svg_bytes(APP_ICON))
+            .icon(widget::icon::from_svg_bytes(APP_ICON))
             .version(env!("CARGO_PKG_VERSION"))
             .links([(fl!("repository"), REPOSITORY)])
             .license(env!("CARGO_PKG_LICENSE"));
@@ -228,6 +235,7 @@ impl cosmic::Application for AppModel {
             update_progress_display: "0".into(),
             dragging_progress_slider: false,
             player: Player::new(),
+            dialog_pages: DialogPages::new(),
             now_playing: None,
             now_playing_handle: None,
             artwork_dir: None,
@@ -242,7 +250,7 @@ impl cosmic::Application for AppModel {
             control_pressed: 0,
             shift_pressed: 0,
             playlists: Vec::new(),
-            view_playlist: None,
+            view_playlist: Some(0),
             audio_playlist: None,
         };
 
@@ -298,26 +306,73 @@ impl cosmic::Application for AppModel {
     /// events received by widgets will be passed to the update method.
     fn view(&self) -> Element<'_, Self::Message> {
         if self.initial_load_complete == false {
-            return loading::content();
+            return loading::content().into();
         }
 
-        let content: Element<_> = match self.nav.active_data::<Page>().unwrap() {
+        let content: Column<_> = match self.nav.active_data::<Page>().unwrap() {
             Page::Library => {
                 if self.library.media.len() == 0 {
                     empty_library::content()
                 } else {
-                    list_view::content(&self)
+                    list_view::content(self)
                 }
             }
+            Page::Playlist(id) => list_view::content(self),
         };
 
-        container(column().push(content))
-            .apply(container)
+        widget::container(widget::column().push(content))
+            .apply(widget::container)
             .height(Length::Fill)
             .width(Length::Fill)
             .align_x(Horizontal::Center)
             .align_y(Vertical::Top)
             .into()
+    }
+
+    fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        let dialog_page = self.dialog_pages.front()?;
+
+        let dialog = match dialog_page {
+            DialogPage::NewPlaylist(name) => {
+                let complete_maybe = if name.is_empty() {
+                    None
+                } else if name.trim().is_empty() {
+                    None
+                } else {
+                    Some(Message::DialogComplete)
+                };
+
+                let dialog = widget::dialog()
+                    .title(fl!("new-playlist"))
+                    .primary_action(
+                        widget::button::suggested(fl!("create")).on_press_maybe(complete_maybe),
+                    )
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel")).on_press(Message::DialogCancel),
+                    )
+                    .control(widget::column::with_children(vec![
+                        widget::text_input(fl!("untitled-playlist"), name)
+                            .on_input(move |name| {
+                                Message::UpdateDialog(DialogPage::NewPlaylist(name))
+                            })
+                            .into(),
+                    ]));
+
+                dialog
+            }
+
+            DialogPage::RenamePlaylist { id, name } => {
+                let dialog = widget::dialog();
+                dialog
+            }
+
+            DialogPage::DeletePlaylist(id) => {
+                let dialog = widget::dialog();
+                dialog
+            }
+        };
+
+        Some(dialog.into())
     }
 
     /// Register subscriptions for this application.
@@ -433,7 +488,7 @@ impl cosmic::Application for AppModel {
                             }
                             Message::SelectedPaths(paths)
                         }
-                        Err(file_chooser::Error::Cancelled) => Message::Cancelled,
+                        Err(file_chooser::Error::Cancelled) => Message::AddLibraryCancel,
                         Err(why) => Message::LibraryPathOpenError(Arc::new(why)),
                     }
                 });
@@ -445,7 +500,7 @@ impl cosmic::Application for AppModel {
             }
 
             // Cancel message for the Open Folder dialog
-            Message::Cancelled => {}
+            Message::AddLibraryCancel => {}
 
             Message::ChangeTrack(id) => {
                 // TODO: Make a proper artwork cache
@@ -475,13 +530,61 @@ impl cosmic::Application for AppModel {
                             };
                             if bytes.len() > 0 {
                                 self.album_artwork.insert(filename, bytes.clone());
-                                self.now_playing_handle = Some(image::Handle::from_bytes(bytes));
+                                self.now_playing_handle =
+                                    Some(widget::image::Handle::from_bytes(bytes));
                             }
+                        } else {
+                            self.now_playing_handle = None;
                         }
                     }
                 }
 
                 self.list_last_clicked = Some(now);
+            }
+
+            Message::CreateNewPlaylist(name) => {
+                let playlist = Playlist::new(name.clone());
+                self.playlists.push(Playlist::new(name));
+                println!("new playlist id: {}", playlist.id());
+                self.save_playlists();
+
+                let divider = match self.playlists.len() {
+                    2 => true,
+                    _ => false,
+                };
+
+                self.nav
+                    .insert()
+                    .text(playlist.name())
+                    .icon(widget::icon::from_name("playlist-symbolic"))
+                    .data(Page::Playlist(playlist.id()))
+                    .divider_above(divider);
+
+                self.save_playlists();
+            }
+
+            Message::DialogCancel => {
+                let _ = self.dialog_pages.pop_front();
+            }
+
+            Message::DialogComplete => {
+                if let Some(dialog_page) = self.dialog_pages.pop_front() {
+                    let mut tasks = Vec::new();
+                    match dialog_page {
+                        DialogPage::NewPlaylist(name) => {
+                            tasks.push(self.update(Message::CreateNewPlaylist(name)));
+                        }
+
+                        DialogPage::RenamePlaylist { id, name } => {
+                            //tasks.push(self.update(Message::RenamePlaylist(id, name)));
+                        }
+
+                        DialogPage::DeletePlaylist(id) => {
+                            tasks.push(self.update(Message::DeletePlaylist(id)));
+                        }
+                    };
+                    return Task::batch(tasks);
+                };
             }
 
             Message::KeyPressed(modifiers, key) => {
@@ -546,8 +649,21 @@ impl cosmic::Application for AppModel {
                 }
             },
 
-            // For File -> New Playlist
-            Message::NewPlaylist => {}
+            Message::NewPlaylist => {
+                self.dialog_pages
+                    .push_back(DialogPage::NewPlaylist(String::new()));
+            }
+
+            Message::RenamePlaylist => {
+                println!(
+                    "{:?} {:?} {:?}",
+                    self.view_playlist,
+                    self.nav.active(),
+                    self.nav.text(self.nav.active())
+                );
+            }
+
+            Message::DeletePlaylist(id) => {}
 
             Message::Next => {
                 println!("Next");
@@ -659,6 +775,17 @@ impl cosmic::Application for AppModel {
             Message::UpdateConfig(config) => {
                 self.config = config;
             }
+
+            Message::UpdateDialog(dialog_page) => match dialog_page {
+                DialogPage::NewPlaylist(name) => {
+                    self.dialog_pages
+                        .update_front(DialogPage::NewPlaylist(name));
+                }
+
+                DialogPage::RenamePlaylist { id, name } => {}
+
+                DialogPage::DeletePlaylist(id) => {}
+            },
 
             Message::UpdateLibrary => {
                 if self.is_updating {
@@ -882,6 +1009,17 @@ impl cosmic::Application for AppModel {
         // Activate the page in the model.
         self.nav.activate(id);
 
+        if let Some(page_data) = self.nav.data::<Page>(id) {
+            match page_data {
+                Page::Library => {
+                    self.view_playlist = Some(0);
+                }
+                Page::Playlist(playlist_id) => {
+                    self.view_playlist = Some(playlist_id.clone());
+                }
+            }
+        }
+
         self.update_title()
     }
 
@@ -896,12 +1034,12 @@ impl AppModel {
     pub fn update_title(&mut self) -> Task<cosmic::Action<Message>> {
         let mut window_title = fl!("app-title");
 
-        if let Some(page) = self.nav.text(self.nav.active()) {
-            window_title.push_str(" — ");
-            window_title.push_str(page);
-        }
+        let page = self.nav.text(self.nav.active());
 
-        println!("{window_title}");
+        if page.is_some() {
+            window_title.push_str(" — ");
+            window_title.push_str(page.unwrap());
+        }
 
         if let Some(id) = self.core.main_window_id() {
             self.set_window_title(window_title, id)
@@ -919,19 +1057,25 @@ impl AppModel {
             AppTheme::System => 0,
         };
 
-        let mut library_column = column();
+        let mut library_column = widget::column();
 
         library_column = library_column.push(
             row()
                 .push(
-                    column()
-                        .push(button::text(fl!("add-location")).on_press(Message::AddLibraryDialog))
+                    widget::column()
+                        .push(
+                            widget::button::text(fl!("add-location"))
+                                .on_press(Message::AddLibraryDialog),
+                        )
                         .width(Length::FillPortion(1))
                         .align_x(Alignment::Start),
                 )
                 .push(
-                    column()
-                        .push(button::text(fl!("update-library")).on_press(Message::UpdateLibrary))
+                    widget::column()
+                        .push(
+                            widget::button::text(fl!("update-library"))
+                                .on_press(Message::UpdateLibrary),
+                        )
                         .width(Length::FillPortion(1))
                         .align_x(Alignment::End),
                 )
@@ -950,13 +1094,13 @@ impl AppModel {
                     .push(text::text(path.clone()).width(Length::FillPortion(1)))
                     // Adds delete button
                     .push(
-                        button::icon(icon::from_name("window-close-symbolic"))
+                        widget::button::icon(widget::icon::from_name("window-close-symbolic"))
                             .on_press(Message::RemoveLibraryPath(path.clone())),
                     ),
             );
 
             if i < library_paths_length {
-                library_column = library_column.push(divider::horizontal::light());
+                library_column = library_column.push(widget::divider::horizontal::light());
             }
         }
 
@@ -964,7 +1108,7 @@ impl AppModel {
             settings::section()
                 .title(fl!("appearance"))
                 .add({
-                    widget::settings::item::builder(fl!("theme")).control(dropdown(
+                    widget::settings::item::builder(fl!("theme")).control(widget::dropdown(
                         &self.app_theme_labels,
                         Some(app_theme_selected),
                         move |index| {
@@ -1046,7 +1190,6 @@ impl AppModel {
 
     /// Load library and playlists
     pub fn load_data(&mut self) -> Task<cosmic::Action<Message>> {
-        println!("Load data");
         let media: HashMap<PathBuf, MediaMetaData> = match AppModel::load_library(&self.xdg_dirs) {
             Ok(media) => media,
             Err(err) => {
@@ -1098,12 +1241,14 @@ impl AppModel {
         let mut playlists: Vec<Playlist> = Vec::new();
 
         // The first playlist is always of the master library
-        let mut library_playlist = Playlist::new();
-        library.media.values().for_each(|v| {
+        let mut library_playlist = Playlist::new("".into());
+        library.media.iter().for_each(|(k, v)| {
             if v.id.is_some() {
-                library_playlist.push(v.clone().id.unwrap());
+                library_playlist.push((k.clone(), v.clone()));
             }
         });
+        library_playlist.sort(SortBy::Artist, SortDirection::Ascending);
+
         playlists.push(library_playlist);
 
         // Make sure playlist path exists
@@ -1123,6 +1268,12 @@ impl AppModel {
 
         Ok(playlists)
     }
+
+    fn save_playlists(&self) {}
+
+    fn set_view_playlist(&mut self, id: Option<u32>) {
+        self.view_playlist = id;
+    }
 }
 
 /// Flags passed into the app
@@ -1136,6 +1287,7 @@ pub struct Flags {
 /// The page to display in the application.
 pub enum Page {
     Library,
+    Playlist(u32),
 }
 
 /// The context page to display in the context drawer.
@@ -1151,6 +1303,7 @@ pub enum MenuAction {
     About,
     NewPlaylist,
     Quit,
+    RenamePlaylist,
     Settings,
     ZoomIn,
     ZoomOut,
@@ -1164,6 +1317,7 @@ impl menu::action::MenuAction for MenuAction {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
             MenuAction::NewPlaylist => Message::NewPlaylist,
+            MenuAction::RenamePlaylist => Message::RenamePlaylist,
             MenuAction::Quit => Message::Quit,
             MenuAction::ZoomIn => Message::ZoomIn,
             MenuAction::ZoomOut => Message::ZoomOut,
@@ -1173,7 +1327,6 @@ impl menu::action::MenuAction for MenuAction {
     }
 }
 
-// TODO: Clean this up
 // Saves album artwork to files, no duplicates
 fn cache_image(sample: gst::Sample, xdg_dirs: BaseDirectories) -> Option<String> {
     let buffer = match sample.buffer() {
@@ -1211,4 +1364,60 @@ fn cache_image(sample: gst::Sample, xdg_dirs: BaseDirectories) -> Option<String>
         }
     }
     Some(file_name)
+}
+
+#[derive(Clone, Debug)]
+pub enum DialogPage {
+    NewPlaylist(String),
+    RenamePlaylist { id: u32, name: String },
+    DeletePlaylist(String),
+}
+
+pub struct DialogPages {
+    pages: VecDeque<DialogPage>,
+}
+
+impl Default for DialogPages {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DialogPages {
+    pub const fn new() -> Self {
+        Self {
+            pages: VecDeque::new(),
+        }
+    }
+
+    pub fn front(&self) -> Option<&DialogPage> {
+        self.pages.front()
+    }
+
+    pub fn push_back(&mut self, page: DialogPage) {
+        self.pages.push_back(page);
+    }
+
+    #[must_use]
+    pub fn pop_front(&mut self) -> Option<DialogPage> {
+        let page = self.pages.pop_front()?;
+        Some(page)
+    }
+
+    pub fn update_front(&mut self, page: DialogPage) {
+        if !self.pages.is_empty() {
+            self.pages[0] = page;
+        }
+    }
+}
+
+pub enum SortBy {
+    Artist,
+    Album,
+    Title,
+}
+
+pub enum SortDirection {
+    Ascending,
+    Descending,
 }

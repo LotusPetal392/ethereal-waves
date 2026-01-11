@@ -1,19 +1,18 @@
 use crate::app::Message;
 use crate::fl;
 use cosmic::{
-    Element, cosmic_theme,
+    cosmic_theme,
     iced::{Alignment, Length},
-    theme,
-    widget::{column, row, text},
+    theme, widget,
 };
-pub fn content<'a>() -> Element<'a, Message> {
+pub fn content<'a>() -> widget::Column<'a, Message> {
     let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
 
-    let content = column()
-        .push(row().push(text(fl!("loading"))).spacing(4))
+    let content = widget::column()
+        .push(widget::row().push(widget::text(fl!("loading"))).spacing(4))
         .padding(space_xxs)
         .width(Length::Fill)
         .align_x(Alignment::Center);
 
-    content.into()
+    content
 }
