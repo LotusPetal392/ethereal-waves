@@ -38,6 +38,7 @@ use gst::prelude::ElementExt;
 use gst::prelude::ElementExtManual;
 use gstreamer as gst;
 use gstreamer_pbutils as pbutils;
+use serde::{Deserialize, Serialize};
 use sha256::digest;
 use std::{
     collections::{HashMap, VecDeque},
@@ -78,7 +79,7 @@ pub struct AppModel {
 
     config_handler: Option<cosmic_config::Config>,
     state_handler: Option<cosmic_config::Config>,
-    state: crate::config::State,
+    pub state: crate::config::State,
 
     pub xdg_dirs: BaseDirectories,
 
@@ -138,6 +139,7 @@ pub enum Message {
     LibraryPathOpenError(Arc<file_chooser::Error>),
     ListSelectRow(String),
     ListViewScroll(scrollable::Viewport),
+    ListViewSort(SortBy),
     NewPlaylist,
     Next,
     PeriodicLibraryUpdate(HashMap<PathBuf, MediaMetaData>),
@@ -705,6 +707,25 @@ impl cosmic::Application for AppModel {
 
                 self.list_visible_row_count =
                     (viewport_height / (self.list_row_height + 1.0)).ceil() as usize;
+            }
+
+            Message::ListViewSort(sort_by) => {
+                let sort_direction = match self.state.sort_direction {
+                    SortDirection::Ascending => SortDirection::Descending,
+                    SortDirection::Descending => SortDirection::Ascending,
+                };
+                state_set!(sort_by, sort_by.clone());
+                state_set!(sort_direction, sort_direction.clone());
+
+                if self.view_playlist.is_some() {
+                    if let Some(i) = self
+                        .playlists
+                        .iter()
+                        .position(|p| p.id() == self.view_playlist.unwrap())
+                    {
+                        self.playlists[i].sort(sort_by, sort_direction);
+                    };
+                }
             }
 
             Message::LaunchUrl(url) => match open::that_detached(&url) {
@@ -1282,8 +1303,7 @@ impl AppModel {
         };
         self.library.media = media;
 
-        let playlists: Vec<Playlist> = match AppModel::load_playlists(&self.xdg_dirs, &self.library)
-        {
+        let playlists: Vec<Playlist> = match self.load_playlists(&self.library) {
             Ok(playlists) => playlists,
             Err(err) => {
                 eprintln!("Failed to load playlists: {err}");
@@ -1317,10 +1337,7 @@ impl AppModel {
     }
 
     /// Load playlist files
-    pub fn load_playlists(
-        xdg_dirs: &BaseDirectories,
-        library: &Library,
-    ) -> anyhow::Result<Vec<Playlist>> {
+    pub fn load_playlists(&self, library: &Library) -> anyhow::Result<Vec<Playlist>> {
         let mut playlists: Vec<Playlist> = Vec::new();
 
         // The first playlist is always of the master library
@@ -1330,12 +1347,15 @@ impl AppModel {
                 library_playlist.push((k.clone(), v.clone()));
             }
         });
-        library_playlist.sort(SortBy::Artist, SortDirection::Ascending);
+        library_playlist.sort(
+            self.state.sort_by.clone(),
+            self.state.sort_direction.clone(),
+        );
 
         playlists.push(library_playlist);
 
         // Make sure playlist path exists
-        let playlist_dir = xdg_dirs.get_data_home().unwrap().join("playlist");
+        let playlist_dir = self.xdg_dirs.get_data_home().unwrap().join("playlist");
         fs::create_dir_all(&playlist_dir)?;
 
         // Read in all the json files in the directory
@@ -1561,12 +1581,14 @@ impl DialogPages {
     }
 }
 
+#[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum SortBy {
     Artist,
     Album,
     Title,
 }
 
+#[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub enum SortDirection {
     Ascending,
     Descending,

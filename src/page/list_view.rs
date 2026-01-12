@@ -1,4 +1,4 @@
-use crate::app::{AppModel, Message};
+use crate::app::{AppModel, Message, SortBy, SortDirection};
 use crate::fl;
 use crate::library::MediaMetaData;
 use cosmic::iced_core::text::Wrapping;
@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
     let cosmic_theme::Spacing {
+        space_xs,
         space_xxs,
         space_xxxs,
         ..
@@ -33,6 +34,11 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
     let chars: f32 = media_len.to_string().len() as f32;
     let number_column_width: f32 = chars * 13.0;
 
+    let sort_icon: String = match app.state.sort_direction {
+        SortDirection::Ascending => "pan-down-symbolic".into(),
+        SortDirection::Descending => "pan-up-symbolic".into(),
+    };
+
     // Header row
     content = content.push(
         widget::row()
@@ -43,9 +49,60 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
                     .align_x(Alignment::End)
                     .width(Length::Fixed(number_column_width)),
             )
-            .push(widget::text::heading(fl!("title")).width(Length::FillPortion(1)))
-            .push(widget::text::heading(fl!("album")).width(Length::FillPortion(1)))
-            .push(widget::text::heading(fl!("artist")).width(Length::FillPortion(1)))
+            .push(
+                widget::button::custom({
+                    let mut row = widget::row()
+                        .align_y(Alignment::Center)
+                        .spacing(space_xxs)
+                        .push(widget::text::heading(fl!("title")));
+
+                    if app.state.sort_by == SortBy::Title {
+                        row = row.push(widget::icon::from_name(sort_icon.as_ref()));
+                    }
+
+                    row
+                })
+                .class(button_style(false, true))
+                .on_press(Message::ListViewSort(SortBy::Title))
+                .padding(0)
+                .width(Length::FillPortion(1)),
+            )
+            .push(
+                widget::button::custom({
+                    let mut row = widget::row()
+                        .align_y(Alignment::Center)
+                        .spacing(space_xxs)
+                        .push(widget::text::heading(fl!("album")));
+
+                    if app.state.sort_by == SortBy::Album {
+                        row = row.push(widget::icon::from_name(sort_icon.as_ref()));
+                    }
+
+                    row
+                })
+                .class(button_style(false, true))
+                .on_press(Message::ListViewSort(SortBy::Album))
+                .padding(0)
+                .width(Length::FillPortion(1)),
+            )
+            .push(
+                widget::button::custom({
+                    let mut row = widget::row()
+                        .align_y(Alignment::Center)
+                        .spacing(space_xxs)
+                        .push(widget::text::heading(fl!("artist")));
+
+                    if app.state.sort_by == SortBy::Artist {
+                        row = row.push(widget::icon::from_name(sort_icon));
+                    }
+
+                    row
+                })
+                .class(button_style(false, true))
+                .on_press(Message::ListViewSort(SortBy::Artist))
+                .padding(0)
+                .width(Length::FillPortion(1)),
+            )
             .push(widget::horizontal_space().width(space_xxxs / 2)),
     );
     content = content.push(widget::divider::horizontal::default());
@@ -118,6 +175,7 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
             )
             .class(button_style(
                 app.list_selected.contains(metadata.id.as_ref().unwrap()),
+                false,
             ))
             .on_press_down(Message::ChangeTrack(metadata.id.clone().unwrap()))
             .padding(0),
@@ -150,20 +208,29 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
     content
 }
 
-fn button_style(selected: bool) -> theme::Button {
+fn button_style(selected: bool, heading: bool) -> theme::Button {
     theme::Button::Custom {
-        active: Box::new(move |_focus, theme| button_appearance(theme, selected, false)),
-        disabled: Box::new(move |theme| button_appearance(theme, selected, false)),
-        hovered: Box::new(move |_focus, theme| button_appearance(theme, selected, true)),
-        pressed: Box::new(move |_focus, theme| button_appearance(theme, selected, false)),
+        active: Box::new(move |_focus, theme| button_appearance(theme, selected, heading, false)),
+        disabled: Box::new(move |theme| button_appearance(theme, selected, heading, false)),
+        hovered: Box::new(move |_focus, theme| button_appearance(theme, selected, heading, true)),
+        pressed: Box::new(move |_focus, theme| button_appearance(theme, selected, heading, false)),
     }
 }
 
-fn button_appearance(theme: &theme::Theme, selected: bool, hovered: bool) -> widget::button::Style {
+fn button_appearance(
+    theme: &theme::Theme,
+    selected: bool,
+    heading: bool,
+    hovered: bool,
+) -> widget::button::Style {
     let cosmic = theme.cosmic();
     let mut appearance = widget::button::Style::new();
 
-    if selected {
+    if heading {
+        appearance.background = Some(Color::TRANSPARENT.into());
+        appearance.icon_color = Some(Color::from(cosmic.on_bg_color()));
+        appearance.text_color = Some(Color::from(cosmic.on_bg_color()));
+    } else if selected {
         appearance.background = Some(Color::from(cosmic.accent_color()).into());
         appearance.icon_color = Some(Color::from(cosmic.on_accent_color()));
         appearance.text_color = Some(Color::from(cosmic.on_accent_color()));

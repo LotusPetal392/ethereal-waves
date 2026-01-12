@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::app::AppModel;
+use crate::app::{AppModel, SortBy, SortDirection};
 use cosmic::{
     Application,
     cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry},
@@ -72,6 +72,8 @@ impl Default for Config {
 #[serde(default)]
 pub struct State {
     pub size_multiplier: f32,
+    pub sort_by: SortBy,
+    pub sort_direction: SortDirection,
     pub window_height: f32,
     pub window_width: f32,
 }
@@ -80,6 +82,8 @@ impl Default for State {
     fn default() -> Self {
         Self {
             size_multiplier: 4.0,
+            sort_by: SortBy::Artist,
+            sort_direction: SortDirection::Ascending,
             window_height: 1024.0,
             window_width: 768.0,
         }
