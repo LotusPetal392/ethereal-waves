@@ -16,17 +16,7 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
         ..
     } = theme::active().cosmic().spacing;
 
-    for (i, p) in app.playlists.iter().enumerate() {
-        let pid = p.id();
-        println!(
-            "{} id: {:?}, find: {}",
-            i,
-            pid,
-            app.view_playlist.unwrap_or(0)
-        );
-    }
-
-    let playlist_index = match app.view_playlist {
+    let playlist_index = match app.view_playlist() {
         Some(playlist_id) => app
             .playlists
             .iter()
@@ -34,10 +24,6 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
             .unwrap_or(0),
         None => 0,
     };
-    println!(
-        "{playlist_index} {playlist_index} {}",
-        app.view_playlist.unwrap_or(0)
-    );
 
     let media: Vec<(PathBuf, MediaMetaData)> = app.playlists[playlist_index].media();
     let media_len = app.playlists[playlist_index].len();

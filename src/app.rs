@@ -115,7 +115,7 @@ pub struct AppModel {
     shift_pressed: u8,
 
     pub playlists: Vec<crate::playlist::Playlist>,
-    pub view_playlist: Option<u32>,
+    view_playlist: Option<u32>,
     audio_playlist: Option<u32>,
 }
 
@@ -126,8 +126,10 @@ pub enum Message {
     AddLibraryDialog,
     AppTheme(AppTheme),
     ChangeTrack(String),
-    CreateNewPlaylist(String),
-    DeletePlaylist(String),
+    CompleteDeleteDialog(u32),
+    CompleteNewPlaylistDialog(String),
+    CompleteRenameDialog(u32, String),
+    DeletePlaylist,
     DialogCancel,
     DialogComplete,
     KeyPressed(Modifiers, Key),
@@ -271,7 +273,7 @@ impl cosmic::Application for AppModel {
 
     /// Elements to pack at the start of the header bar.
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
-        let menu_bar = menu_bar(self.is_updating, &self.key_binds);
+        let menu_bar = menu_bar(self.is_updating, self.view_playlist, &self.key_binds);
         vec![menu_bar.into()]
     }
 
@@ -317,7 +319,7 @@ impl cosmic::Application for AppModel {
                     list_view::content(self)
                 }
             }
-            Page::Playlist(id) => list_view::content(self),
+            Page::Playlist(_) => list_view::content(self),
         };
 
         widget::container(widget::column().push(content))
@@ -362,12 +364,51 @@ impl cosmic::Application for AppModel {
             }
 
             DialogPage::RenamePlaylist { id, name } => {
-                let dialog = widget::dialog();
+                let complete_maybe = if name.is_empty() {
+                    None
+                } else if name.trim().is_empty() {
+                    None
+                } else {
+                    Some(Message::DialogComplete)
+                };
+
+                let dialog = widget::dialog()
+                    .title(fl!("rename-playlist"))
+                    .primary_action(
+                        widget::button::suggested(fl!("rename")).on_press_maybe(complete_maybe),
+                    )
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel")).on_press(Message::DialogCancel),
+                    )
+                    .control(widget::column::with_children(vec![
+                        widget::text_input("", name)
+                            .on_input(move |name| {
+                                Message::UpdateDialog(DialogPage::RenamePlaylist {
+                                    id: *id,
+                                    name: name,
+                                })
+                            })
+                            .into(),
+                    ]));
                 dialog
             }
 
             DialogPage::DeletePlaylist(id) => {
-                let dialog = widget::dialog();
+                let playlist = self.playlists.iter().find(|p| p.id() == *id);
+
+                let dialog = widget::dialog()
+                    .title(fl!("delete-playlist"))
+                    .icon(widget::icon::from_name("dialog-warning").size(64))
+                    .body(format!("{} {}?", fl!("delete"), playlist.unwrap().name()))
+                    .primary_action(
+                        widget::button::suggested(fl!("yes")).on_press(Message::DialogComplete),
+                    )
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel")).on_press(Message::DialogCancel),
+                    )
+                    .control(widget::column::with_children(vec![
+                        widget::text(fl!("delete-warning")).into(),
+                    ]));
                 dialog
             }
         };
@@ -504,6 +545,9 @@ impl cosmic::Application for AppModel {
 
             Message::ChangeTrack(id) => {
                 // TODO: Make a proper artwork cache
+                if !self.library.from_id(id.clone()).is_some() {
+                    return Task::none();
+                }
                 let (path, media_metadata) = self.library.from_id(id).unwrap();
                 let uri = Url::from_file_path(path).unwrap();
                 let now = Instant::now();
@@ -542,16 +586,16 @@ impl cosmic::Application for AppModel {
                 self.list_last_clicked = Some(now);
             }
 
-            Message::CreateNewPlaylist(name) => {
-                let playlist = Playlist::new(name.clone());
-                self.playlists.push(Playlist::new(name));
-                println!("new playlist id: {}", playlist.id());
-                self.save_playlists();
+            Message::CompleteDeleteDialog(id) => {
+                self.delete_playlist(id);
+            }
 
-                let divider = match self.playlists.len() {
-                    2 => true,
-                    _ => false,
-                };
+            Message::CompleteNewPlaylistDialog(name) => {
+                let playlist = Playlist::new(name.clone());
+                self.playlists.push(playlist.clone());
+
+                let divider = self.playlists.len() == 2;
+                let playlist_id = playlist.id();
 
                 self.nav
                     .insert()
@@ -560,7 +604,28 @@ impl cosmic::Application for AppModel {
                     .data(Page::Playlist(playlist.id()))
                     .divider_above(divider);
 
-                self.save_playlists();
+                self.save_playlists(Some(playlist_id));
+            }
+
+            Message::CompleteRenameDialog(id, name) => {
+                // Update playlist
+                if let Some(playlist) = self.playlists.iter_mut().find(|p| p.id() == id) {
+                    playlist.set_name(name.clone());
+                }
+
+                // Update nav text
+                let entity = self.nav.iter().find(|&e| {
+                    self.nav.data::<Page>(e).map_or(false, |page| match page {
+                        Page::Playlist(playlist_id) => *playlist_id == id,
+                        _ => false,
+                    })
+                });
+
+                if let Some(entity) = entity {
+                    self.nav.text_set(entity, name);
+                }
+
+                self.save_playlists(Some(id));
             }
 
             Message::DialogCancel => {
@@ -572,15 +637,15 @@ impl cosmic::Application for AppModel {
                     let mut tasks = Vec::new();
                     match dialog_page {
                         DialogPage::NewPlaylist(name) => {
-                            tasks.push(self.update(Message::CreateNewPlaylist(name)));
+                            tasks.push(self.update(Message::CompleteNewPlaylistDialog(name)));
                         }
 
                         DialogPage::RenamePlaylist { id, name } => {
-                            //tasks.push(self.update(Message::RenamePlaylist(id, name)));
+                            tasks.push(self.update(Message::CompleteRenameDialog(id, name)));
                         }
 
                         DialogPage::DeletePlaylist(id) => {
-                            tasks.push(self.update(Message::DeletePlaylist(id)));
+                            tasks.push(self.update(Message::CompleteDeleteDialog(id)));
                         }
                     };
                     return Task::batch(tasks);
@@ -649,21 +714,33 @@ impl cosmic::Application for AppModel {
                 }
             },
 
+            // Kick off the New Playlist dialog
             Message::NewPlaylist => {
                 self.dialog_pages
                     .push_back(DialogPage::NewPlaylist(String::new()));
             }
 
-            Message::RenamePlaylist => {
-                println!(
-                    "{:?} {:?} {:?}",
-                    self.view_playlist,
-                    self.nav.active(),
-                    self.nav.text(self.nav.active())
-                );
-            }
+            // Kick off the Rename Playlist dialog
+            Message::RenamePlaylist => match self.nav.data(self.nav.active()) {
+                Some(Page::Library) => {}
+                Some(Page::Playlist(id)) => {
+                    let name = self.nav.text(self.nav.active()).unwrap_or("");
+                    self.dialog_pages.push_back(DialogPage::RenamePlaylist {
+                        id: *id,
+                        name: name.into(),
+                    })
+                }
+                None => {}
+            },
 
-            Message::DeletePlaylist(id) => {}
+            // Kick off the delete playlist dialog
+            Message::DeletePlaylist => match self.nav.data(self.nav.active()) {
+                Some(Page::Library) => {}
+                Some(Page::Playlist(id)) => {
+                    self.dialog_pages.push_back(DialogPage::DeletePlaylist(*id))
+                }
+                None => {}
+            },
 
             Message::Next => {
                 println!("Next");
@@ -782,9 +859,15 @@ impl cosmic::Application for AppModel {
                         .update_front(DialogPage::NewPlaylist(name));
                 }
 
-                DialogPage::RenamePlaylist { id, name } => {}
+                DialogPage::RenamePlaylist { id, name } => {
+                    self.dialog_pages
+                        .update_front(DialogPage::RenamePlaylist { id: id, name: name });
+                }
 
-                DialogPage::DeletePlaylist(id) => {}
+                DialogPage::DeletePlaylist(id) => {
+                    self.dialog_pages
+                        .update_front(DialogPage::DeletePlaylist(id));
+                }
             },
 
             Message::UpdateLibrary => {
@@ -1009,15 +1092,14 @@ impl cosmic::Application for AppModel {
         // Activate the page in the model.
         self.nav.activate(id);
 
-        if let Some(page_data) = self.nav.data::<Page>(id) {
-            match page_data {
-                Page::Library => {
-                    self.view_playlist = Some(0);
-                }
-                Page::Playlist(playlist_id) => {
-                    self.view_playlist = Some(playlist_id.clone());
-                }
+        match self.nav.data::<Page>(id) {
+            Some(Page::Library) => {
+                self.set_view_playlist(Some(0));
             }
+            Some(Page::Playlist(playlist_id)) => {
+                self.set_view_playlist(Some(playlist_id.clone()));
+            }
+            None => {}
         }
 
         self.update_title()
@@ -1180,12 +1262,13 @@ impl AppModel {
         Ok(bytes)
     }
 
-    // pub fn get_artwork(&self, filename: String) -> Option<&Vec<u8>> {
-    //     self.album_artwork.get(&filename)
-    // }
-
     pub fn update_list_row_height(&mut self) {
         self.list_row_height = 5.0 * self.size_multiplier;
+    }
+
+    /// Returns the currently visible playlist
+    pub fn view_playlist(&self) -> Option<u32> {
+        self.view_playlist
     }
 
     /// Load library and playlists
@@ -1269,7 +1352,71 @@ impl AppModel {
         Ok(playlists)
     }
 
-    fn save_playlists(&self) {}
+    fn save_playlists(&self, id: Option<u32>) {
+        println!("Save playlist: {:?}", id);
+        let playlist_path = self
+            .xdg_dirs
+            .get_data_home()
+            .clone()
+            .unwrap()
+            .join("playlist");
+
+        if id.is_some() {
+            let filename = format!("{}.json", id.unwrap());
+            let file_path = playlist_path.join(&filename);
+            match fs::remove_file(&file_path) {
+                Ok(()) => {}
+                Err(_) => {}
+            }
+            if let Some(playlist) = self.playlists.iter().find(|p| p.id() == id.unwrap()) {
+                let json_data =
+                    serde_json::to_string(playlist).expect("Failed to serialize playlist");
+                let mut file = File::create(file_path).expect("Failed to create playlist file");
+                file.write_all(json_data.as_bytes())
+                    .expect("Failed to write JSON data to file");
+            }
+        }
+    }
+
+    /// Delete playlist from filesystem, playlists, and nav area
+    pub fn delete_playlist(&mut self, id: u32) -> anyhow::Result<()> {
+        // Delete from filesystem
+        let playlist = self.playlists.iter().find(|p| p.id() == id);
+        let filename = format!("{}.json", playlist.unwrap().id());
+        let file_path = self
+            .xdg_dirs
+            .get_data_home()
+            .unwrap()
+            .join("playlist")
+            .join(filename);
+        fs::remove_file(file_path)?;
+
+        // Delete from nav
+        let library = self.nav.iter().find(|&e| {
+            self.nav
+                .data::<Page>(e)
+                .map_or(false, |page| matches!(page, Page::Library))
+        });
+        if let Some(entity) = library {
+            self.nav.activate(entity);
+        }
+
+        let entity = self.nav.iter().find(|&e| {
+            self.nav.data::<Page>(e).map_or(false, |page| match page {
+                Page::Playlist(playlist_id) => *playlist_id == id,
+                _ => false,
+            })
+        });
+
+        if let Some(entity) = entity {
+            self.nav.remove(entity);
+        }
+
+        // Delete from playlists
+        self.playlists.retain(|p| p.id() != id);
+
+        Ok(())
+    }
 
     fn set_view_playlist(&mut self, id: Option<u32>) {
         self.view_playlist = id;
@@ -1285,6 +1432,7 @@ pub struct Flags {
 }
 
 /// The page to display in the application.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Page {
     Library,
     Playlist(u32),
@@ -1301,6 +1449,7 @@ pub enum ContextPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
     About,
+    DeletePlaylist,
     NewPlaylist,
     Quit,
     RenamePlaylist,
@@ -1318,6 +1467,7 @@ impl menu::action::MenuAction for MenuAction {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
             MenuAction::NewPlaylist => Message::NewPlaylist,
             MenuAction::RenamePlaylist => Message::RenamePlaylist,
+            MenuAction::DeletePlaylist => Message::DeletePlaylist,
             MenuAction::Quit => Message::Quit,
             MenuAction::ZoomIn => Message::ZoomIn,
             MenuAction::ZoomOut => Message::ZoomOut,
@@ -1370,7 +1520,7 @@ fn cache_image(sample: gst::Sample, xdg_dirs: BaseDirectories) -> Option<String>
 pub enum DialogPage {
     NewPlaylist(String),
     RenamePlaylist { id: u32, name: String },
-    DeletePlaylist(String),
+    DeletePlaylist(u32),
 }
 
 pub struct DialogPages {

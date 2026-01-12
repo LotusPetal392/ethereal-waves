@@ -8,8 +8,10 @@ use std::collections::HashMap;
 
 pub fn menu_bar<'a>(
     is_updating: bool,
+    view_playlist: Option<u32>,
     key_binds: &HashMap<KeyBind, MenuAction>,
 ) -> Element<'a, Message> {
+    let current_playlist = view_playlist.unwrap_or(0);
     menu::bar(vec![
         menu::Tree::with_children(
             menu::root(fl!("file")).apply(Element::from),
@@ -17,11 +19,32 @@ pub fn menu_bar<'a>(
                 key_binds,
                 vec![
                     menu::Item::Button(fl!("new-playlist-menu"), None, MenuAction::NewPlaylist),
-                    menu::Item::Button(
-                        fl!("rename-playlist-menu"),
-                        None,
-                        MenuAction::RenamePlaylist,
-                    ),
+                    if current_playlist > 0 {
+                        menu::Item::Button(
+                            fl!("rename-playlist-menu"),
+                            None,
+                            MenuAction::RenamePlaylist,
+                        )
+                    } else {
+                        menu::Item::ButtonDisabled(
+                            fl!("rename-playlist-menu"),
+                            None,
+                            MenuAction::RenamePlaylist,
+                        )
+                    },
+                    if current_playlist > 0 {
+                        menu::Item::Button(
+                            fl!("delete-playlist-menu"),
+                            None,
+                            MenuAction::DeletePlaylist,
+                        )
+                    } else {
+                        menu::Item::ButtonDisabled(
+                            fl!("delete-playlist-menu"),
+                            None,
+                            MenuAction::DeletePlaylist,
+                        )
+                    },
                     menu::Item::Divider,
                     if is_updating {
                         menu::Item::ButtonDisabled(

@@ -4,6 +4,9 @@ repository = Repository
 git-description = Git commit {$hash} on {$date}
 
 new-playlist = New Playlist
+rename = Rename
+rename-playlist = Rename Playlist
+delete-playlist = Delete Playlist
 library = Library
 update-library = Update Library
 updating-library = Updating Library
@@ -15,6 +18,7 @@ untitled-playlist = Untitled Playlist
 file = File
 new-playlist-menu = New Playlist...
 rename-playlist-menu = Rename Playlist...
+delete-playlist-menu = Delete Playlist...
 view = View
 zoom-in = Zoom In
 zoom-out = Zoom Out
@@ -23,11 +27,13 @@ about-ethereal-waves = About Ethereal Waves...
 settings-menu = Settings...
 
 # Dialog
-ok = Ok
+yes = Yes
 cancel = Cancel
 create-new-playlist = Create New Playlist
 playlist-name = Playlist name
 create = Create
+delete = Delete
+delete-warning = This action cannot be undone
 
 # Settings
 match-desktop = Match Desktop

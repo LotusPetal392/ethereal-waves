@@ -29,10 +29,6 @@ impl Playlist {
         self.id
     }
 
-    pub fn set_id(&mut self, id: u32) {
-        self.id = id;
-    }
-
     pub fn name(&self) -> String {
         self.name.clone()
     }
