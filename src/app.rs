@@ -167,6 +167,9 @@ pub enum Message {
 /// Unique identifier in RDNN (reverse domain name notation) format.
 pub const APP_ID: &'static str = "com.github.LotusPetal392.ethereal-waves";
 
+const NEW_PLAYLIST_INPUT_ID: &str = "new_playlist_input_id";
+const RENAME_PLAYLIST_INPUT_ID: &str = "rename_playlist_input_id";
+
 /// Create a COSMIC application from the app model
 impl cosmic::Application for AppModel {
     /// The async executor that will be used to run your application's commands.
@@ -356,6 +359,7 @@ impl cosmic::Application for AppModel {
                     )
                     .control(widget::column::with_children(vec![
                         widget::text_input(fl!("untitled-playlist"), name)
+                            .id(widget::Id::new(NEW_PLAYLIST_INPUT_ID))
                             .on_input(move |name| {
                                 Message::UpdateDialog(DialogPage::NewPlaylist(name))
                             })
@@ -390,6 +394,7 @@ impl cosmic::Application for AppModel {
                                     name: name,
                                 })
                             })
+                            .id(widget::Id::new(RENAME_PLAYLIST_INPUT_ID))
                             .into(),
                     ]));
                 dialog
@@ -514,6 +519,7 @@ impl cosmic::Application for AppModel {
         }
 
         match message {
+            // Open dialog for adding library locations
             Message::AddLibraryDialog => {
                 return cosmic::task::future(async move {
                     let dialog = file_chooser::open::Dialog::new().title(fl!("add-location"));
@@ -589,7 +595,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::CompleteDeleteDialog(id) => {
-                self.delete_playlist(id);
+                let _ = self.delete_playlist(id);
             }
 
             Message::CompleteNewPlaylistDialog(name) => {
@@ -666,6 +672,30 @@ impl cosmic::Application for AppModel {
                 if key == Key::Named(Named::Shift) && self.shift_pressed < 2 {
                     self.shift_pressed += 1;
                 }
+
+                if self.dialog_pages.front().is_some() {
+                    if key == Key::Named(Named::Escape) {
+                        return self.update(Message::DialogCancel);
+                    }
+
+                    match self.dialog_pages.front().unwrap() {
+                        DialogPage::NewPlaylist(name) => {
+                            if key == Key::Named(Named::Enter) && name.len() > 0 {
+                                return self.update(Message::DialogComplete);
+                            }
+                        }
+                        DialogPage::RenamePlaylist { id, name } => {
+                            if key == Key::Named(Named::Enter) && name.len() > 0 {
+                                return self.update(Message::DialogComplete);
+                            }
+                        }
+                        DialogPage::DeletePlaylist(_) => {
+                            if key == Key::Named(Named::Enter) {
+                                return self.update(Message::DialogComplete);
+                            }
+                        }
+                    }
+                }
             }
 
             Message::KeyReleased(key) => {
@@ -739,19 +769,20 @@ impl cosmic::Application for AppModel {
             Message::NewPlaylist => {
                 self.dialog_pages
                     .push_back(DialogPage::NewPlaylist(String::new()));
+                return widget::text_input::focus(widget::Id::new(NEW_PLAYLIST_INPUT_ID));
             }
 
             // Kick off the Rename Playlist dialog
             Message::RenamePlaylist => match self.nav.data(self.nav.active()) {
-                Some(Page::Library) => {}
                 Some(Page::Playlist(id)) => {
                     let name = self.nav.text(self.nav.active()).unwrap_or("");
                     self.dialog_pages.push_back(DialogPage::RenamePlaylist {
                         id: *id,
                         name: name.into(),
-                    })
+                    });
+                    return widget::text_input::focus(widget::Id::new(RENAME_PLAYLIST_INPUT_ID));
                 }
-                None => {}
+                _ => {}
             },
 
             // Kick off the delete playlist dialog
