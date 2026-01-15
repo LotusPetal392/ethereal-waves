@@ -1,32 +1,25 @@
 use crate::app::{AppModel, Message, SortBy, SortDirection};
 use crate::fl;
-use crate::library::MediaMetaData;
 use cosmic::iced_core::text::Wrapping;
 use cosmic::{
     cosmic_theme,
     iced::{Alignment, Color, Length},
     theme, widget,
 };
-use std::path::PathBuf;
 
 pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
     let cosmic_theme::Spacing {
-        space_xs,
         space_xxs,
         space_xxxs,
         ..
     } = theme::active().cosmic().spacing;
 
-    let playlist_index = match app.view_playlist() {
-        Some(playlist_id) => app
-            .playlists
-            .iter()
-            .position(|p| p.id() == playlist_id)
-            .unwrap_or(0),
-        None => 0,
-    };
+    let playlist_index = app
+        .view_playlist()
+        .and_then(|id| app.playlists.iter().position(|p| p.id() == id))
+        .unwrap_or(0);
 
-    let media: Vec<(PathBuf, MediaMetaData)> = app.playlists[playlist_index].media();
+    let media = app.playlists[playlist_index].media();
     let media_len = app.playlists[playlist_index].len();
 
     let mut content = widget::column();
@@ -57,7 +50,7 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
                         .push(widget::text::heading(fl!("title")));
 
                     if app.state.sort_by == SortBy::Title {
-                        row = row.push(widget::icon::from_name(sort_icon.as_ref()));
+                        row = row.push(widget::icon::from_name(sort_icon.as_str()));
                     }
 
                     row
@@ -75,7 +68,7 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
                         .push(widget::text::heading(fl!("album")));
 
                     if app.state.sort_by == SortBy::Album {
-                        row = row.push(widget::icon::from_name(sort_icon.as_ref()));
+                        row = row.push(widget::icon::from_name(sort_icon.as_str()));
                     }
 
                     row
@@ -177,7 +170,7 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
                 app.list_selected.contains(metadata.id.as_ref().unwrap()),
                 false,
             ))
-            .on_press_down(Message::ChangeTrack(metadata.id.clone().unwrap()))
+            .on_press_down(Message::ChangeTrack(id.clone()))
             .padding(0),
         )
         .on_release(Message::ListSelectRow(id.clone()));
@@ -190,7 +183,11 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
         count = count + 1;
     }
 
-    let viewport_height = (app.list_row_height + 1.0) * media_len as f32 - 1.0;
+    let viewport_height = if media_len > 0 {
+        (app.list_row_height + 1.0) * media_len as f32 - 1.0
+    } else {
+        0.0
+    };
 
     // Vertical shim on left side the height of rows + horizontal rules
     let scrollable_contents = widget::row()

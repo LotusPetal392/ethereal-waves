@@ -14,10 +14,13 @@ pub struct Playlist {
 
 impl Playlist {
     pub fn new(name: String) -> Playlist {
-        let id = match name.len() {
-            0 => 0,
-            _ => rand::rng().random(),
-        };
+        let mut id: u32;
+        loop {
+            id = rand::rng().random();
+            if id != 0 {
+                break;
+            }
+        }
         Self {
             id: id,
             name: name,
@@ -29,16 +32,16 @@ impl Playlist {
         self.id
     }
 
-    pub fn name(&self) -> String {
-        self.name.clone()
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn set_name(&mut self, name: String) {
         self.name = name
     }
 
-    pub fn media(&self) -> Vec<(PathBuf, MediaMetaData)> {
-        self.media.clone()
+    pub fn media(&self) -> &[(PathBuf, MediaMetaData)] {
+        &self.media
     }
 
     pub fn len(&self) -> usize {

@@ -16,9 +16,12 @@ untitled-playlist = Untitled Playlist
 
 # Menu
 file = File
+playlist = Playlist
 new-playlist-menu = New Playlist...
 rename-playlist-menu = Rename Playlist...
 delete-playlist-menu = Delete Playlist...
+move-up = Move Up
+move-down = Move Down
 view = View
 zoom-in = Zoom In
 zoom-out = Zoom Out

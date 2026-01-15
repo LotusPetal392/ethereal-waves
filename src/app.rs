@@ -140,6 +140,8 @@ pub enum Message {
     ListSelectRow(String),
     ListViewScroll(scrollable::Viewport),
     ListViewSort(SortBy),
+    MoveNavDown,
+    MoveNavUp,
     NewPlaylist,
     Next,
     PeriodicLibraryUpdate(HashMap<PathBuf, MediaMetaData>),
@@ -257,7 +259,7 @@ impl cosmic::Application for AppModel {
             control_pressed: 0,
             shift_pressed: 0,
             playlists: Vec::new(),
-            view_playlist: Some(0),
+            view_playlist: None,
             audio_playlist: None,
         };
 
@@ -316,15 +318,16 @@ impl cosmic::Application for AppModel {
             return loading::content().into();
         }
 
-        let content: Column<_> = match self.nav.active_data::<Page>().unwrap() {
-            Page::Library => {
-                if self.library.media.len() == 0 {
+        let content: Column<_> = match self.view_playlist {
+            Some(0) => {
+                if self.library.media.is_empty() {
                     empty_library::content()
                 } else {
                     list_view::content(self)
                 }
             }
-            Page::Playlist(_) => list_view::content(self),
+            Some(_) => list_view::content(self),
+            None => empty_library::content(),
         };
 
         widget::container(widget::column().push(content))
@@ -599,7 +602,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::CompleteNewPlaylistDialog(name) => {
-                let playlist = Playlist::new(name.clone());
+                let playlist = Playlist::new(name);
                 self.playlists.push(playlist.clone());
 
                 let divider = self.playlists.len() == 2;
@@ -607,7 +610,7 @@ impl cosmic::Application for AppModel {
 
                 self.nav
                     .insert()
-                    .text(playlist.name())
+                    .text(playlist.name().to_string())
                     .icon(widget::icon::from_name("playlist-symbolic"))
                     .data(Page::Playlist(playlist.id()))
                     .divider_above(divider);
@@ -685,6 +688,7 @@ impl cosmic::Application for AppModel {
                             }
                         }
                         DialogPage::RenamePlaylist { id, name } => {
+                            let _ = id;
                             if key == Key::Named(Named::Enter) && name.len() > 0 {
                                 return self.update(Message::DialogComplete);
                             }
@@ -793,6 +797,18 @@ impl cosmic::Application for AppModel {
                 }
                 None => {}
             },
+
+            Message::MoveNavUp | Message::MoveNavDown => {
+                self.move_active_nav(if matches!(message, Message::MoveNavUp) {
+                    -1
+                } else {
+                    1
+                });
+
+                let order = self.nav_order();
+
+                state_set!(playlist_nav_order, order);
+            }
 
             Message::Next => {
                 println!("Next");
@@ -1148,8 +1164,8 @@ impl cosmic::Application for AppModel {
             Some(Page::Library) => {
                 self.set_view_playlist(Some(0));
             }
-            Some(Page::Playlist(playlist_id)) => {
-                self.set_view_playlist(Some(playlist_id.clone()));
+            Some(Page::Playlist(pid)) => {
+                self.set_view_playlist(Some(*pid));
             }
             None => {}
         }
@@ -1325,6 +1341,7 @@ impl AppModel {
 
     /// Load library and playlists
     pub fn load_data(&mut self) -> Task<cosmic::Action<Message>> {
+        // Load library
         let media: HashMap<PathBuf, MediaMetaData> = match AppModel::load_library(&self.xdg_dirs) {
             Ok(media) => media,
             Err(err) => {
@@ -1334,15 +1351,49 @@ impl AppModel {
         };
         self.library.media = media;
 
-        let playlists: Vec<Playlist> = match self.load_playlists(&self.library) {
+        // Load Playlists
+        let playlists: Vec<Playlist> = match self.load_playlists() {
             Ok(playlists) => playlists,
             Err(err) => {
                 eprintln!("Failed to load playlists: {err}");
                 Vec::new()
             }
         };
-
         self.playlists = playlists;
+
+        // Decide nav order
+        let items: Vec<NavPlaylistItem> = if !self.state.playlist_nav_order.is_empty() {
+            // Restore saved order
+            self.state
+                .playlist_nav_order
+                .iter()
+                .filter_map(|pid| {
+                    self.playlists
+                        .iter()
+                        .find(|p| p.id() == *pid)
+                        .map(|p| NavPlaylistItem {
+                            id: *pid,
+                            name: p.name().to_string(),
+                        })
+                })
+                .collect()
+        } else {
+            self.playlists
+                .iter()
+                .map(|p| NavPlaylistItem {
+                    id: p.id(),
+                    name: p.name().to_string(),
+                })
+                .collect()
+        };
+
+        // Decide what should be active
+        let active_id = self
+            .view_playlist()
+            .unwrap_or_else(|| items.first().map(|i| i.id).unwrap_or(0));
+
+        // Rebuild nav once
+        self.rebuild_nav_from_order(items, active_id);
 
         self.initial_load_complete = true;
         Task::none()
@@ -1368,12 +1419,12 @@ impl AppModel {
     }
 
     /// Load playlist files
-    pub fn load_playlists(&self, library: &Library) -> anyhow::Result<Vec<Playlist>> {
+    pub fn load_playlists(&self) -> anyhow::Result<Vec<Playlist>> {
         let mut playlists: Vec<Playlist> = Vec::new();
 
         // The first playlist is always of the master library
         let mut library_playlist = Playlist::new("".into());
-        library.media.iter().for_each(|(k, v)| {
+        self.library.media.iter().for_each(|(k, v)| {
             if v.id.is_some() {
                 library_playlist.push((k.clone(), v.clone()));
             }
@@ -1415,10 +1466,7 @@ impl AppModel {
         if id.is_some() {
             let filename = format!("{}.json", id.unwrap());
             let file_path = playlist_path.join(&filename);
-            match fs::remove_file(&file_path) {
-                Ok(()) => {}
-                Err(_) => {}
-            }
+
             if let Some(playlist) = self.playlists.iter().find(|p| p.id() == id.unwrap()) {
                 let json_data =
                     serde_json::to_string(playlist).expect("Failed to serialize playlist");
@@ -1443,35 +1491,123 @@ impl AppModel {
         fs::remove_file(file_path)?;
 
         // Delete from nav
-        let library = self.nav.iter().find(|&e| {
+        let ids: Vec<_> = self.nav.iter().collect();
+
+        if let Some(entity) = ids.iter().copied().find(|e| {
             self.nav
-                .data::<Page>(e)
-                .map_or(false, |page| matches!(page, Page::Library))
-        });
-        if let Some(entity) = library {
+                .data::<Page>(*e)
+                .map_or(false, |p| matches!(p, Page::Library))
+        }) {
             self.nav.activate(entity);
         }
 
-        let entity = self.nav.iter().find(|&e| {
-            self.nav.data::<Page>(e).map_or(false, |page| match page {
-                Page::Playlist(playlist_id) => *playlist_id == id,
+        if let Some(entity) = ids.iter().copied().find(|e| {
+            self.nav.data::<Page>(*e).map_or(false, |p| match p {
+                Page::Playlist(pid) => *pid == id,
                 _ => false,
             })
-        });
-
-        if let Some(entity) = entity {
+        }) {
             self.nav.remove(entity);
         }
 
-        // Delete from playlists
-        self.playlists.retain(|p| p.id() != id);
-
         Ok(())
+    }
+
+    fn rebuild_nav_from_order(&mut self, items: Vec<NavPlaylistItem>, activate_id: u32) {
+        self.nav.clear();
+
+        self.nav
+            .insert()
+            .text(fl!("library"))
+            .data::<Page>(Page::Library)
+            .icon(widget::icon::from_name("folder-music-symbolic"))
+            .activate();
+
+        for (i, item) in items.iter().enumerate() {
+            if item.id == 0 {
+                continue;
+            }
+
+            self.nav
+                .insert()
+                .text(item.name.clone())
+                .icon(widget::icon::from_name("playlist-symbolic"))
+                .data(Page::Playlist(item.id))
+                .divider_above(i == 0);
+        }
+
+        let activate_id = activate_id;
+
+        let nav_id_to_activate = self
+            .nav
+            .iter()
+            .find_map(|id| match self.nav.data::<Page>(id) {
+                Some(Page::Playlist(pid)) if *pid == activate_id => Some(id),
+                _ => None,
+            });
+
+        if let Some(id) = nav_id_to_activate {
+            self.nav.activate(id);
+        }
+
+        self.nav_order();
+    }
+
+    /// Swap positions of nav items
+    fn move_active_nav(&mut self, direction: i32) {
+        let active = self.nav.active();
+
+        let Some(Page::Playlist(active_id)) = self.nav.data::<Page>(active) else {
+            return;
+        };
+
+        let mut items: Vec<NavPlaylistItem> = Vec::new();
+
+        for id in self.nav.iter() {
+            if let Some(Page::Playlist(pid)) = self.nav.data::<Page>(id) {
+                if let Some(p) = self.playlists.iter().find(|p| p.id() == *pid) {
+                    items.push(NavPlaylistItem {
+                        id: *pid,
+                        name: p.name().to_string(),
+                    });
+                }
+            }
+        }
+
+        let idx = items.iter().position(|p| p.id == *active_id).unwrap();
+
+        let new_idx = match direction {
+            -1 if idx > 0 => idx - 1,
+            1 if idx + 1 < items.len() => idx + 1,
+            _ => return,
+        };
+
+        items.swap(idx, new_idx);
+
+        self.rebuild_nav_from_order(items, *active_id);
+    }
+
+    fn nav_order(&mut self) -> Vec<u32> {
+        self.nav
+            .iter()
+            .filter_map(|id| {
+                self.nav.data::<Page>(id).and_then(|page| match page {
+                    Page::Playlist(pid) => Some(*pid),
+                    _ => None,
+                })
+            })
+            .collect()
     }
 
     fn set_view_playlist(&mut self, id: Option<u32>) {
         self.view_playlist = id;
     }
+}
+
+#[derive(Clone)]
+struct NavPlaylistItem {
+    id: u32,
+    name: String,
 }
 
 /// Flags passed into the app
@@ -1501,13 +1637,15 @@ pub enum ContextPage {
 pub enum MenuAction {
     About,
     DeletePlaylist,
+    MoveNavDown,
+    MoveNavUp,
     NewPlaylist,
     Quit,
     RenamePlaylist,
     Settings,
+    UpdateLibrary,
     ZoomIn,
     ZoomOut,
-    UpdateLibrary,
 }
 
 impl menu::action::MenuAction for MenuAction {
@@ -1516,14 +1654,16 @@ impl menu::action::MenuAction for MenuAction {
     fn message(&self) -> Self::Message {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
+            MenuAction::DeletePlaylist => Message::DeletePlaylist,
+            MenuAction::MoveNavDown => Message::MoveNavDown,
+            MenuAction::MoveNavUp => Message::MoveNavUp,
             MenuAction::NewPlaylist => Message::NewPlaylist,
             MenuAction::RenamePlaylist => Message::RenamePlaylist,
-            MenuAction::DeletePlaylist => Message::DeletePlaylist,
             MenuAction::Quit => Message::Quit,
-            MenuAction::ZoomIn => Message::ZoomIn,
-            MenuAction::ZoomOut => Message::ZoomOut,
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
             MenuAction::UpdateLibrary => Message::UpdateLibrary,
+            MenuAction::ZoomIn => Message::ZoomIn,
+            MenuAction::ZoomOut => Message::ZoomOut,
         }
     }
 }
