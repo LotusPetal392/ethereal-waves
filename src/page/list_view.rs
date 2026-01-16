@@ -1,5 +1,6 @@
 use crate::app::{AppModel, Message, SortBy, SortDirection};
 use crate::fl;
+use crate::playlist::Playlist;
 use cosmic::iced_core::text::Wrapping;
 use cosmic::{
     cosmic_theme,
@@ -7,24 +8,18 @@ use cosmic::{
     theme, widget,
 };
 
-pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
+pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column<'a, Message> {
     let cosmic_theme::Spacing {
         space_xxs,
         space_xxxs,
         ..
     } = theme::active().cosmic().spacing;
 
-    let playlist_index = app
-        .view_playlist()
-        .and_then(|id| app.playlists.iter().position(|p| p.id() == id))
-        .unwrap_or(0);
-
-    let media = app.playlists[playlist_index].media();
-    let media_len = app.playlists[playlist_index].len();
+    let tracks_len = active_playlist.len();
 
     let mut content = widget::column();
 
-    let chars: f32 = media_len.to_string().len() as f32;
+    let chars: f32 = tracks_len.to_string().len() as f32;
     let number_column_width: f32 = chars * 13.0;
 
     let sort_icon: String = match app.state.sort_direction {
@@ -109,8 +104,8 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
     let mut count: u32 = app.list_start as u32 + 1;
 
     let mut list_end = app.list_start + app.list_visible_row_count + 1;
-    if list_end > media_len {
-        list_end = media_len;
+    if list_end > tracks_len {
+        list_end = tracks_len;
     }
 
     let wrapping = if app.config.list_text_wrap {
@@ -119,7 +114,11 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
         Wrapping::None
     };
 
-    for (path, metadata) in media.get(app.list_start..(list_end)).unwrap_or(&[]) {
+    for (path, metadata) in active_playlist
+        .tracks()
+        .get(app.list_start..(list_end))
+        .unwrap_or(&[])
+    {
         let id = metadata.id.clone().unwrap();
 
         let row = widget::mouse_area(
@@ -176,15 +175,15 @@ pub fn content(app: &AppModel) -> widget::Column<'_, Message> {
         .on_release(Message::ListSelectRow(id.clone()));
 
         rows = rows.push(row);
-        if count < media_len as u32 {
+        if count < tracks_len as u32 {
             rows = rows.push(widget::divider::horizontal::default());
         }
 
         count = count + 1;
     }
 
-    let viewport_height = if media_len > 0 {
-        (app.list_row_height + 1.0) * media_len as f32 - 1.0
+    let viewport_height = if tracks_len > 0 {
+        (app.list_row_height + 1.0) * tracks_len as f32 - 1.0
     } else {
         0.0
     };

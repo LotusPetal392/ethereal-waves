@@ -41,7 +41,7 @@ use gstreamer_pbutils as pbutils;
 use serde::{Deserialize, Serialize};
 use sha256::digest;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     error::Error,
     fs::{self, File},
     io::Write,
@@ -81,7 +81,8 @@ pub struct AppModel {
     state_handler: Option<cosmic_config::Config>,
     pub state: crate::config::State,
 
-    pub xdg_dirs: BaseDirectories,
+    pub rdnn_xdg_dirs: BaseDirectories,
+    app_xdg_dirs: BaseDirectories,
 
     pub library: Library,
 
@@ -127,9 +128,6 @@ pub enum Message {
     AddLibraryDialog,
     AppTheme(AppTheme),
     ChangeTrack(String),
-    CompleteDeleteDialog(u32),
-    CompleteNewPlaylistDialog(String),
-    CompleteRenameDialog(u32, String),
     DeletePlaylist,
     DialogCancel,
     DialogComplete,
@@ -200,13 +198,7 @@ impl cosmic::Application for AppModel {
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
         // Create a nav bar with three page items.
-        let mut nav = nav_bar::Model::default();
-
-        nav.insert()
-            .text(fl!("library"))
-            .data::<Page>(Page::Library)
-            .icon(widget::icon::from_name("folder-music-symbolic"))
-            .activate();
+        let nav = nav_bar::Model::default();
 
         // Create the about widget
         let about = About::default()
@@ -233,7 +225,8 @@ impl cosmic::Application for AppModel {
             config_handler: _flags.config_handler,
             state_handler: _flags.state_handler,
             state: _flags.state.clone(),
-            xdg_dirs: xdg::BaseDirectories::with_prefix(APP_ID),
+            rdnn_xdg_dirs: xdg::BaseDirectories::with_prefix(APP_ID),
+            app_xdg_dirs: xdg::BaseDirectories::with_prefix("ethereal-waves"),
             initial_load_complete: false,
             library: Library::new(),
             is_updating: false,
@@ -270,7 +263,7 @@ impl cosmic::Application for AppModel {
         let load_data = app.load_data();
 
         // Build out artwork cache directory
-        app.artwork_dir = app.xdg_dirs.get_cache_home();
+        app.artwork_dir = app.rdnn_xdg_dirs.get_cache_home();
         app.artwork_dir = app.artwork_dir.map(|p| p.join("artwork"));
 
         app.update_list_row_height();
@@ -318,15 +311,14 @@ impl cosmic::Application for AppModel {
             return loading::content().into();
         }
 
-        let content: Column<_> = match self.view_playlist {
-            Some(0) => {
-                if self.library.media.is_empty() {
-                    empty_library::content()
-                } else {
-                    list_view::content(self)
-                }
-            }
-            Some(_) => list_view::content(self),
+        let playlist = self
+            .playlists
+            .iter()
+            .find(|p| Some(p.id()) == self.view_playlist);
+
+        let content: Column<_> = match playlist {
+            Some(p) if p.is_library() && p.tracks().is_empty() => empty_library::content(),
+            Some(p) => list_view::content(self, p),
             None => empty_library::content(),
         };
 
@@ -597,69 +589,56 @@ impl cosmic::Application for AppModel {
                 self.list_last_clicked = Some(now);
             }
 
-            Message::CompleteDeleteDialog(id) => {
-                let _ = self.delete_playlist(id);
-            }
-
-            Message::CompleteNewPlaylistDialog(name) => {
-                let playlist = Playlist::new(name);
-                self.playlists.push(playlist.clone());
-
-                let divider = self.playlists.len() == 2;
-                let playlist_id = playlist.id();
-
-                self.nav
-                    .insert()
-                    .text(playlist.name().to_string())
-                    .icon(widget::icon::from_name("playlist-symbolic"))
-                    .data(Page::Playlist(playlist.id()))
-                    .divider_above(divider);
-
-                self.save_playlists(Some(playlist_id));
-            }
-
-            Message::CompleteRenameDialog(id, name) => {
-                // Update playlist
-                if let Some(playlist) = self.playlists.iter_mut().find(|p| p.id() == id) {
-                    playlist.set_name(name.clone());
-                }
-
-                // Update nav text
-                let entity = self.nav.iter().find(|&e| {
-                    self.nav.data::<Page>(e).map_or(false, |page| match page {
-                        Page::Playlist(playlist_id) => *playlist_id == id,
-                        _ => false,
-                    })
-                });
-
-                if let Some(entity) = entity {
-                    self.nav.text_set(entity, name);
-                }
-
-                self.save_playlists(Some(id));
-            }
-
             Message::DialogCancel => {
                 let _ = self.dialog_pages.pop_front();
             }
 
             Message::DialogComplete => {
                 if let Some(dialog_page) = self.dialog_pages.pop_front() {
-                    let mut tasks = Vec::new();
                     match dialog_page {
                         DialogPage::NewPlaylist(name) => {
-                            tasks.push(self.update(Message::CompleteNewPlaylistDialog(name)));
+                            let playlist = Playlist::new(name);
+                            self.playlists.push(playlist.clone());
+
+                            let divider = self.playlists.len() == 2;
+                            let playlist_id = playlist.id();
+
+                            self.nav
+                                .insert()
+                                .text(playlist.name().to_string())
+                                .icon(widget::icon::from_name("playlist-symbolic"))
+                                .data(Page::Playlist(playlist.id()))
+                                .divider_above(divider);
+
+                            let _ = self.save_playlists(Some(playlist_id));
                         }
 
                         DialogPage::RenamePlaylist { id, name } => {
-                            tasks.push(self.update(Message::CompleteRenameDialog(id, name)));
+                            // Update playlist
+                            if let Some(playlist) = self.playlists.iter_mut().find(|p| p.id() == id)
+                            {
+                                playlist.set_name(name.clone());
+                            }
+
+                            // Update nav text
+                            let entity = self.nav.iter().find(|&e| {
+                                self.nav.data::<Page>(e).map_or(false, |page| match page {
+                                    Page::Playlist(playlist_id) => *playlist_id == id,
+                                    _ => false,
+                                })
+                            });
+
+                            if let Some(entity) = entity {
+                                self.nav.text_set(entity, name);
+                            }
+
+                            let _ = self.save_playlists(Some(id));
                         }
 
                         DialogPage::DeletePlaylist(id) => {
-                            tasks.push(self.update(Message::CompleteDeleteDialog(id)));
+                            let _ = self.delete_playlist(id);
                         }
                     };
-                    return Task::batch(tasks);
                 };
             }
 
@@ -790,13 +769,15 @@ impl cosmic::Application for AppModel {
             },
 
             // Kick off the delete playlist dialog
-            Message::DeletePlaylist => match self.nav.data(self.nav.active()) {
-                Some(Page::Library) => {}
-                Some(Page::Playlist(id)) => {
-                    self.dialog_pages.push_back(DialogPage::DeletePlaylist(*id))
+            Message::DeletePlaylist => {
+                if let Some(Page::Playlist(id)) = self.nav.data(self.nav.active()) {
+                    if let Some(p) = self.playlists.iter().find(|p| p.id() == *id) {
+                        if !p.is_library() {
+                            self.dialog_pages.push_back(DialogPage::DeletePlaylist(*id));
+                        }
+                    }
                 }
-                None => {}
-            },
+            }
 
             Message::MoveNavUp | Message::MoveNavDown => {
                 self.move_active_nav(if matches!(message, Message::MoveNavUp) {
@@ -816,7 +797,19 @@ impl cosmic::Application for AppModel {
 
             Message::PeriodicLibraryUpdate(media) => {
                 self.library.media = media;
-                let _ = self.library.save();
+                let _ = self.library.save(&self.app_xdg_dirs);
+
+                // Update the library playlist with new data
+                if let Some(lib_playlist) = self.playlists.iter_mut().find(|p| p.is_library()) {
+                    lib_playlist.clear(); // Clear existing tracks
+                    for (path, metadata) in &self.library.media {
+                        lib_playlist.push((path.clone(), metadata.clone()));
+                    }
+                    lib_playlist.sort(
+                        self.state.sort_by.clone(),
+                        self.state.sort_direction.clone(),
+                    );
+                }
             }
 
             Message::Previous => {
@@ -910,11 +903,23 @@ impl cosmic::Application for AppModel {
 
             Message::UpdateComplete(library) => {
                 self.library = library;
-                match self.library.save() {
+                match self.library.save(&self.app_xdg_dirs) {
                     Ok(_) => {}
                     Err(e) => eprintln!("There was an error saving library data: {e}"),
                 };
                 self.is_updating = false;
+
+                // Update the library playlist with new data
+                if let Some(lib_playlist) = self.playlists.iter_mut().find(|p| p.is_library()) {
+                    lib_playlist.clear(); // Clear existing tracks
+                    for (path, metadata) in &self.library.media {
+                        lib_playlist.push((path.clone(), metadata.clone()));
+                    }
+                    lib_playlist.sort(
+                        self.state.sort_by.clone(),
+                        self.state.sort_direction.clone(),
+                    );
+                }
             }
 
             Message::UpdateConfig(config) => {
@@ -946,7 +951,7 @@ impl cosmic::Application for AppModel {
                 self.update_progress = 0.0;
 
                 let library_paths = self.config.library_paths.clone();
-                let xdg_dirs = self.xdg_dirs.clone();
+                let xdg_dirs = self.app_xdg_dirs.clone();
 
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -1160,14 +1165,8 @@ impl cosmic::Application for AppModel {
         // Activate the page in the model.
         self.nav.activate(id);
 
-        match self.nav.data::<Page>(id) {
-            Some(Page::Library) => {
-                self.set_view_playlist(Some(0));
-            }
-            Some(Page::Playlist(pid)) => {
-                self.set_view_playlist(Some(*pid));
-            }
-            None => {}
+        if let Some(Page::Playlist(pid)) = self.nav.data(id) {
+            self.view_playlist = Some(*pid);
         }
 
         self.update_title()
@@ -1334,37 +1333,42 @@ impl AppModel {
         self.list_row_height = 5.0 * self.size_multiplier;
     }
 
-    /// Returns the currently visible playlist
-    pub fn view_playlist(&self) -> Option<u32> {
-        self.view_playlist
-    }
-
     /// Load library and playlists
     pub fn load_data(&mut self) -> Task<cosmic::Action<Message>> {
         // Load library
-        let media: HashMap<PathBuf, MediaMetaData> = match AppModel::load_library(&self.xdg_dirs) {
-            Ok(media) => media,
-            Err(err) => {
-                eprintln!("Failed to load library: {err}");
-                HashMap::new()
-            }
-        };
+        let media: HashMap<PathBuf, MediaMetaData> =
+            match AppModel::load_library(&self.app_xdg_dirs) {
+                Ok(media) => media,
+                Err(err) => {
+                    eprintln!("Failed to load library: {err}");
+                    HashMap::new()
+                }
+            };
         self.library.media = media;
 
-        // Load Playlists
-        let playlists: Vec<Playlist> = match self.load_playlists() {
-            Ok(playlists) => playlists,
-            Err(err) => {
-                eprintln!("Failed to load playlists: {err}");
-                Vec::new()
-            }
-        };
+        // Setup library playlist
+        let mut library_playlist = Playlist::library();
+        for (path, metadata) in &self.library.media {
+            library_playlist.push((path.clone(), metadata.clone()));
+        }
+
+        library_playlist.sort(
+            self.state.sort_by.clone(),
+            self.state.sort_direction.clone(),
+        );
+
+        // Load user playlists
+        let mut playlists = vec![library_playlist];
+        playlists.extend(self.load_playlists().unwrap_or_default());
         self.playlists = playlists;
+
+        println!("There are {} playlists loaded.", self.playlists.len());
 
         // Decide nav order
         let items: Vec<NavPlaylistItem> = if !self.state.playlist_nav_order.is_empty() {
-            // Restore saved order
-            self.state
+            // Start with saved order
+            let mut ordered_items: Vec<NavPlaylistItem> = self
+                .state
                 .playlist_nav_order
                 .iter()
                 .filter_map(|pid| {
@@ -1376,10 +1380,24 @@ impl AppModel {
                             name: p.name().to_string(),
                         })
                 })
-                .collect()
+                .collect();
+
+            // Add any playlists that aren't in the saves order
+            let ordered_ids: HashSet<_> = ordered_items.iter().map(|item| item.id).collect();
+            for playlist in self.playlists.iter().filter(|p| !p.is_library()) {
+                if !ordered_ids.contains(&playlist.id()) {
+                    ordered_items.push(NavPlaylistItem {
+                        id: playlist.id(),
+                        name: playlist.name().to_string(),
+                    });
+                }
+            }
+
+            ordered_items
         } else {
             self.playlists
                 .iter()
+                .filter(|p| !p.is_library())
                 .map(|p| NavPlaylistItem {
                     id: p.id(),
                     name: p.name().to_string(),
@@ -1389,8 +1407,14 @@ impl AppModel {
 
         // Decide what should be active
         let active_id = self
-            .view_playlist()
-            .unwrap_or_else(|| items.first().map(|i| i.id).unwrap_or(0));
+            .view_playlist
+            .or_else(|| {
+                self.playlists
+                    .iter()
+                    .find(|p| p.is_library())
+                    .map(|p| p.id())
+            })
+            .unwrap();
 
         // Rebuild nav once
         self.rebuild_nav_from_order(items, active_id);
@@ -1420,30 +1444,17 @@ impl AppModel {
 
     /// Load playlist files
     pub fn load_playlists(&self) -> anyhow::Result<Vec<Playlist>> {
+        // Make sure playlist path exists
+        let playlist_path = self.app_xdg_dirs.create_data_directory("playlists")?;
+
         let mut playlists: Vec<Playlist> = Vec::new();
 
-        // The first playlist is always of the master library
-        let mut library_playlist = Playlist::new("".into());
-        self.library.media.iter().for_each(|(k, v)| {
-            if v.id.is_some() {
-                library_playlist.push((k.clone(), v.clone()));
-            }
-        });
-        library_playlist.sort(
-            self.state.sort_by.clone(),
-            self.state.sort_direction.clone(),
-        );
-
-        playlists.push(library_playlist);
-
-        // Make sure playlist path exists
-        let playlist_dir = self.xdg_dirs.get_data_home().unwrap().join("playlist");
-        fs::create_dir_all(&playlist_dir)?;
-
         // Read in all the json files in the directory
-        for file in fs::read_dir(playlist_dir)? {
+        for file in fs::read_dir(playlist_path)? {
             let file = file?;
             let file_path = file.path();
+
+            println!("file found: {}", file_path.to_string_lossy());
 
             if file_path.extension().and_then(|e| e.to_str()) == Some("json") {
                 let contents = fs::read_to_string(&file_path)?;
@@ -1454,14 +1465,11 @@ impl AppModel {
         Ok(playlists)
     }
 
-    fn save_playlists(&self, id: Option<u32>) {
-        println!("Save playlist: {:?}", id);
-        let playlist_path = self
-            .xdg_dirs
-            .get_data_home()
-            .clone()
-            .unwrap()
-            .join("playlist");
+    fn save_playlists(&self, id: Option<u32>) -> anyhow::Result<()> {
+        let playlist_path = self.app_xdg_dirs.create_data_directory("playlists")?;
+
+        // Make sure path exists
+        let _ = fs::create_dir_all(&playlist_path);
 
         if id.is_some() {
             let filename = format!("{}.json", id.unwrap());
@@ -1475,6 +1483,8 @@ impl AppModel {
                     .expect("Failed to write JSON data to file");
             }
         }
+
+        Ok(())
     }
 
     /// Delete playlist from filesystem, playlists, and nav area
@@ -1482,12 +1492,9 @@ impl AppModel {
         // Delete from filesystem
         let playlist = self.playlists.iter().find(|p| p.id() == id);
         let filename = format!("{}.json", playlist.unwrap().id());
-        let file_path = self
-            .xdg_dirs
-            .get_data_home()
-            .unwrap()
-            .join("playlist")
-            .join(filename);
+        let mut file_path = self.app_xdg_dirs.create_data_directory("playlists")?;
+        file_path = file_path.join(filename);
+
         fs::remove_file(file_path)?;
 
         // Delete from nav
@@ -1496,15 +1503,27 @@ impl AppModel {
         if let Some(entity) = ids.iter().copied().find(|e| {
             self.nav
                 .data::<Page>(*e)
-                .map_or(false, |p| matches!(p, Page::Library))
+                .and_then(|p| match p {
+                    Page::Playlist(pid) => self
+                        .playlists
+                        .iter()
+                        .find(|pl| pl.id() == *pid && pl.is_library()),
+                })
+                .is_some()
         }) {
             self.nav.activate(entity);
+            self.view_playlist = self.nav.data(entity).and_then(|p| {
+                if let Page::Playlist(id) = p {
+                    Some(*id)
+                } else {
+                    None
+                }
+            });
         }
 
         if let Some(entity) = ids.iter().copied().find(|e| {
             self.nav.data::<Page>(*e).map_or(false, |p| match p {
                 Page::Playlist(pid) => *pid == id,
-                _ => false,
             })
         }) {
             self.nav.remove(entity);
@@ -1516,17 +1535,18 @@ impl AppModel {
     fn rebuild_nav_from_order(&mut self, items: Vec<NavPlaylistItem>, activate_id: u32) {
         self.nav.clear();
 
+        let library_id = self.playlists.iter().find(|p| p.is_library()).unwrap().id();
+
         self.nav
             .insert()
             .text(fl!("library"))
-            .data::<Page>(Page::Library)
-            .icon(widget::icon::from_name("folder-music-symbolic"))
-            .activate();
+            .data(Page::Playlist(library_id))
+            .icon(widget::icon::from_name("folder-music-symbolic"));
 
         for (i, item) in items.iter().enumerate() {
-            if item.id == 0 {
+            let Some(_) = self.playlists.iter().find(|p| p.id() == item.id) else {
                 continue;
-            }
+            };
 
             self.nav
                 .insert()
@@ -1535,8 +1555,6 @@ impl AppModel {
                 .data(Page::Playlist(item.id))
                 .divider_above(i == 0);
         }
-
-        let activate_id = activate_id;
 
         let nav_id_to_activate = self
             .nav
@@ -1548,6 +1566,7 @@ impl AppModel {
 
         if let Some(id) = nav_id_to_activate {
             self.nav.activate(id);
+            self.view_playlist = Some(activate_id);
         }
 
         self.nav_order();
@@ -1561,18 +1580,32 @@ impl AppModel {
             return;
         };
 
-        let mut items: Vec<NavPlaylistItem> = Vec::new();
+        let active_playlist = self
+            .playlists
+            .iter()
+            .find(|p| p.id() == *active_id)
+            .unwrap();
 
-        for id in self.nav.iter() {
-            if let Some(Page::Playlist(pid)) = self.nav.data::<Page>(id) {
-                if let Some(p) = self.playlists.iter().find(|p| p.id() == *pid) {
-                    items.push(NavPlaylistItem {
-                        id: *pid,
-                        name: p.name().to_string(),
-                    });
-                }
-            }
+        if active_playlist.is_library() {
+            return;
         }
+
+        let mut items: Vec<_> = self
+            .nav
+            .iter()
+            .filter_map(|nav_id| {
+                self.nav.data::<Page>(nav_id).and_then(|p| match p {
+                    Page::Playlist(pid) => self
+                        .playlists
+                        .iter()
+                        .find(|pl| pl.id() == *pid && !pl.is_library())
+                        .map(|pl| NavPlaylistItem {
+                            id: *pid,
+                            name: pl.name().to_string(),
+                        }),
+                })
+            })
+            .collect();
 
         let idx = items.iter().position(|p| p.id == *active_id).unwrap();
 
@@ -1592,15 +1625,14 @@ impl AppModel {
             .iter()
             .filter_map(|id| {
                 self.nav.data::<Page>(id).and_then(|page| match page {
-                    Page::Playlist(pid) => Some(*pid),
-                    _ => None,
+                    Page::Playlist(pid) => self
+                        .playlists
+                        .iter()
+                        .find(|p| p.id() == *pid && !p.is_library())
+                        .map(|_| *pid),
                 })
             })
             .collect()
-    }
-
-    fn set_view_playlist(&mut self, id: Option<u32>) {
-        self.view_playlist = id;
     }
 }
 
@@ -1621,7 +1653,6 @@ pub struct Flags {
 /// The page to display in the application.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Page {
-    Library,
     Playlist(u32),
 }
 
@@ -1763,4 +1794,10 @@ pub enum SortBy {
 pub enum SortDirection {
     Ascending,
     Descending,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum PlaylistKind {
+    Library,
+    User,
 }

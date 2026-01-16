@@ -11,20 +11,18 @@ use xdg::BaseDirectories;
 #[derive(Debug, Clone)]
 pub struct Library {
     pub media: HashMap<PathBuf, MediaMetaData>,
-    xdg_dirs: BaseDirectories,
 }
 
 impl Library {
     pub fn new() -> Library {
         Self {
             media: HashMap::new(),
-            xdg_dirs: xdg::BaseDirectories::with_prefix(APP_ID),
         }
     }
 
-    // Save the current media to the xdg data directory
-    pub fn save(&self) -> Result<(), Box<dyn Error>> {
-        let file_path = self.xdg_dirs.place_data_file("library.json").unwrap();
+    // Save the current media to the home data directory
+    pub fn save(&self, app_xdg_dirs: &BaseDirectories) -> Result<(), Box<dyn Error>> {
+        let file_path = app_xdg_dirs.place_data_file("library.json").unwrap();
         let file = File::create(file_path)?;
         let mut writer = BufWriter::new(file);
         serde_json::to_writer(&mut writer, &self.media)?;

@@ -1,4 +1,5 @@
-use crate::app::{SortBy, SortDirection};
+use crate::app::{PlaylistKind, SortBy, SortDirection};
+use crate::fl;
 use crate::library::MediaMetaData;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -9,7 +10,8 @@ use std::path::PathBuf;
 pub struct Playlist {
     id: u32,
     name: String,
-    media: Vec<(PathBuf, MediaMetaData)>,
+    kind: PlaylistKind,
+    tracks: Vec<(PathBuf, MediaMetaData)>,
 }
 
 impl Playlist {
@@ -24,8 +26,26 @@ impl Playlist {
         Self {
             id: id,
             name: name,
-            media: Vec::new(),
+            kind: PlaylistKind::User,
+            tracks: Vec::new(),
         }
+    }
+
+    pub fn library() -> Self {
+        Self {
+            id: u32::MAX,
+            name: fl!("library"),
+            kind: PlaylistKind::Library,
+            tracks: Vec::new(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.tracks.clear();
+    }
+
+    pub fn is_library(&self) -> bool {
+        matches!(self.kind, PlaylistKind::Library)
     }
 
     pub fn id(&self) -> u32 {
@@ -40,18 +60,18 @@ impl Playlist {
         self.name = name
     }
 
-    pub fn media(&self) -> &[(PathBuf, MediaMetaData)] {
-        &self.media
+    pub fn tracks(&self) -> &[(PathBuf, MediaMetaData)] {
+        &self.tracks
     }
 
     pub fn len(&self) -> usize {
-        self.media.len()
+        self.tracks.len()
     }
 
     pub fn sort(&mut self, sort_by: SortBy, sort_direction: SortDirection) {
         match sort_by {
             SortBy::Artist => {
-                self.media.sort_by(|a, b| {
+                self.tracks.sort_by(|a, b| {
                     let ordering =
                         a.1.artist
                             .cmp(&b.1.artist)
@@ -64,7 +84,7 @@ impl Playlist {
                 });
             }
             SortBy::Album => {
-                self.media.sort_by(|a, b| {
+                self.tracks.sort_by(|a, b| {
                     let ordering = a.1.album.cmp(&b.1.album);
                     match sort_direction {
                         SortDirection::Ascending => ordering,
@@ -73,7 +93,7 @@ impl Playlist {
                 });
             }
             SortBy::Title => {
-                self.media.sort_by(|a, b| {
+                self.tracks.sort_by(|a, b| {
                     let ordering = a.1.title.cmp(&b.1.title);
                     match sort_direction {
                         SortDirection::Ascending => ordering,
@@ -85,11 +105,11 @@ impl Playlist {
     }
 
     pub fn push(&mut self, media: (PathBuf, MediaMetaData)) {
-        self.media.push(media);
+        self.tracks.push(media);
     }
 
     pub fn remove(&mut self, index: usize) {
-        self.media.remove(index);
+        self.tracks.remove(index);
     }
 }
 
@@ -98,7 +118,7 @@ impl fmt::Debug for Playlist {
         write!(
             f,
             "Playlist {{ id: {}, name: {}, tracks: {:?} }}",
-            self.id, self.name, self.media
+            self.id, self.name, self.tracks
         )
     }
 }
