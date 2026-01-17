@@ -12,9 +12,10 @@ use crate::page::list_view;
 use crate::page::loading;
 use crate::player::Player;
 use crate::playlist::Playlist;
-use cosmic::iced_widget::scrollable;
+use cosmic::iced_widget::scrollable::{self, AbsoluteOffset};
 use cosmic::prelude::*;
 use cosmic::{
+    Action,
     app::context_drawer,
     cosmic_config::{self, CosmicConfigEntry},
     cosmic_theme,
@@ -105,9 +106,14 @@ pub struct AppModel {
     album_artwork: HashMap<String, Vec<u8>>,
     dragging_progress_slider: bool,
 
+    view_mode: ViewMode,
+
     size_multiplier: f32,
+    pub list_scroll_id: widget::Id,
     pub list_row_height: f32,
+    pub list_divider_height: f32,
     pub list_view_scroll_offset: f32,
+    pub list_view_height: f32,
     pub list_start: usize,
     pub list_visible_row_count: usize,
     pub list_selected: Vec<String>,
@@ -242,9 +248,13 @@ impl cosmic::Application for AppModel {
             now_playing_handle: None,
             artwork_dir: None,
             album_artwork: HashMap::new(),
+            view_mode: ViewMode::List,
             size_multiplier: _flags.state.size_multiplier,
+            list_scroll_id: widget::Id::unique(),
             list_row_height: 20.0,
+            list_divider_height: 1.0,
             list_view_scroll_offset: 0.0,
+            list_view_height: 0.0,
             list_start: 0,
             list_visible_row_count: 0,
             list_selected: Vec::new(),
@@ -624,7 +634,6 @@ impl cosmic::Application for AppModel {
                             let entity = self.nav.iter().find(|&e| {
                                 self.nav.data::<Page>(e).map_or(false, |page| match page {
                                     Page::Playlist(playlist_id) => *playlist_id == id,
-                                    _ => false,
                                 })
                             });
 
@@ -679,6 +688,30 @@ impl cosmic::Application for AppModel {
                         }
                     }
                 }
+
+                if matches!(self.view_mode, ViewMode::List) {
+                    match key {
+                        Key::Named(Named::PageUp) => {
+                            return scrollable::scroll_by::<Action<Message>>(
+                                self.list_scroll_id.clone(),
+                                scrollable::AbsoluteOffset {
+                                    x: 0.0,
+                                    y: -self.list_view_height,
+                                },
+                            );
+                        }
+                        Key::Named(Named::PageDown) => {
+                            return scrollable::scroll_by::<Action<Message>>(
+                                self.list_scroll_id.clone(),
+                                scrollable::AbsoluteOffset {
+                                    x: 0.0,
+                                    y: self.list_view_height,
+                                },
+                            );
+                        }
+                        _ => {}
+                    }
+                }
             }
 
             Message::KeyReleased(key) => {
@@ -712,32 +745,47 @@ impl cosmic::Application for AppModel {
 
             // Handle scroll events from scrollable widgets
             Message::ListViewScroll(viewport) => {
+                let row_stride = self.list_row_height + self.list_divider_height;
                 let viewport_height = viewport.bounds().height;
+
                 self.list_view_scroll_offset = viewport.absolute_offset().y;
 
-                self.list_start =
-                    (self.list_view_scroll_offset / (self.list_row_height + 1.0)).floor() as usize;
+                // Offset
+                self.list_start = (self.list_view_scroll_offset / row_stride).floor() as usize;
 
-                self.list_visible_row_count =
-                    (viewport_height / (self.list_row_height + 1.0)).ceil() as usize;
+                // Visible rows
+                self.list_visible_row_count = (viewport_height / row_stride).ceil() as usize;
+
+                // Clamp
+                let tracks_len = self
+                    .view_playlist
+                    .and_then(|id| self.playlists.iter().find(|p| p.id() == id))
+                    .map(|p| p.len())
+                    .unwrap_or(0);
+
+                let max_start = tracks_len.saturating_sub(self.list_visible_row_count);
+                self.list_start = self.list_start.min(max_start);
+
+                self.list_view_height = viewport.bounds().height;
             }
 
-            Message::ListViewSort(sort_by) => {
-                let sort_direction = match self.state.sort_direction {
-                    SortDirection::Ascending => SortDirection::Descending,
-                    SortDirection::Descending => SortDirection::Ascending,
+            Message::ListViewSort(new_sort_by) => {
+                let new_direction = if self.state.sort_by == new_sort_by {
+                    match self.state.sort_direction {
+                        SortDirection::Ascending => SortDirection::Descending,
+                        SortDirection::Descending => SortDirection::Ascending,
+                    }
+                } else {
+                    SortDirection::Ascending
                 };
-                state_set!(sort_by, sort_by.clone());
-                state_set!(sort_direction, sort_direction.clone());
 
-                if self.view_playlist.is_some() {
-                    if let Some(i) = self
-                        .playlists
-                        .iter()
-                        .position(|p| p.id() == self.view_playlist.unwrap())
-                    {
-                        self.playlists[i].sort(sort_by, sort_direction);
-                    };
+                state_set!(sort_by, new_sort_by.clone());
+                state_set!(sort_direction, new_direction.clone());
+
+                if let Some(view_id) = self.view_playlist {
+                    if let Some(i) = self.playlists.iter().position(|p| p.id() == view_id) {
+                        self.playlists[i].sort(new_sort_by, new_direction);
+                    }
                 }
             }
 
@@ -890,6 +938,14 @@ impl cosmic::Application for AppModel {
                     self.context_page = context_page;
                     self.core.window.show_context = true;
                 }
+
+                return scrollable::scroll_to::<Action<Message>>(
+                    self.list_scroll_id.clone(),
+                    AbsoluteOffset {
+                        x: 0.0,
+                        y: self.list_view_scroll_offset,
+                    },
+                );
             }
 
             Message::ToggleListTextWrap(list_text_wrap) => {
@@ -1512,13 +1568,12 @@ impl AppModel {
                 .is_some()
         }) {
             self.nav.activate(entity);
-            self.view_playlist = self.nav.data(entity).and_then(|p| {
-                if let Page::Playlist(id) = p {
-                    Some(*id)
-                } else {
-                    None
-                }
-            });
+            self.view_playlist = self
+                .nav
+                .data::<Page>(entity)
+                .map_or(None, |page| match page {
+                    Page::Playlist(playlist_id) => Some(*playlist_id),
+                });
         }
 
         if let Some(entity) = ids.iter().copied().find(|e| {
@@ -1800,4 +1855,9 @@ pub enum SortDirection {
 pub enum PlaylistKind {
     Library,
     User,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ViewMode {
+    List,
 }

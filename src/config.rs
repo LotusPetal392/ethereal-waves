@@ -63,7 +63,7 @@ impl Default for Config {
         Self {
             app_theme: AppTheme::System,
             library_paths: HashSet::new(),
-            list_text_wrap: false,
+            list_text_wrap: true,
         }
     }
 }
