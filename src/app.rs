@@ -11,7 +11,7 @@ use crate::page::empty_library;
 use crate::page::list_view;
 use crate::page::loading;
 use crate::player::Player;
-use crate::playlist::Playlist;
+use crate::playlist::{Playlist, Track};
 use cosmic::iced_widget::scrollable::{self, AbsoluteOffset};
 use cosmic::prelude::*;
 use cosmic::{
@@ -72,7 +72,7 @@ pub struct AppModel {
     /// Contains items assigned to the nav bar panel.
     nav: nav_bar::Model,
     /// Key bindings for the application's menu bar.
-    key_binds: HashMap<menu::KeyBind, MenuAction>,
+    pub key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// Configuration data that persists between application runs.
     pub config: Config,
     /// Settings page / app theme dropdown labels
@@ -116,22 +116,21 @@ pub struct AppModel {
     pub list_view_height: f32,
     pub list_start: usize,
     pub list_visible_row_count: usize,
-    pub list_selected: Vec<String>,
     list_last_clicked: Option<Instant>,
 
     control_pressed: u8,
     shift_pressed: u8,
 
     pub playlists: Vec<crate::playlist::Playlist>,
-    view_playlist: Option<u32>,
+    pub view_playlist: Option<u32>,
     audio_playlist: Option<u32>,
 }
 
 /// Messages emitted by the application and its widgets.
 #[derive(Debug, Clone)]
 pub enum Message {
-    AddLibraryCancel,
     AddLibraryDialog,
+    AddToPlaylist(u32),
     AppTheme(AppTheme),
     ChangeTrack(String),
     DeletePlaylist,
@@ -141,23 +140,26 @@ pub enum Message {
     KeyReleased(Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
-    ListSelectRow(String),
+    ListSelectRow(usize),
     ListViewScroll(scrollable::Viewport),
     ListViewSort(SortBy),
     MoveNavDown,
     MoveNavUp,
     NewPlaylist,
     Next,
+    Noop,
     PeriodicLibraryUpdate(HashMap<PathBuf, MediaMetaData>),
     Previous,
     Quit,
     ReleaseSlider,
     RemoveLibraryPath(String),
+    RemoveSelectedFromPlaylist,
     RenamePlaylist,
     SelectedPaths(Vec<String>),
     SliderSeek(f32),
     Tick,
     ToggleContextPage(ContextPage),
+    ToggleListRowAlignTop(bool),
     ToggleListTextWrap(bool),
     TogglePlaying,
     UpdateComplete(Library),
@@ -257,7 +259,6 @@ impl cosmic::Application for AppModel {
             list_view_height: 0.0,
             list_start: 0,
             list_visible_row_count: 0,
-            list_selected: Vec::new(),
             list_last_clicked: None,
             control_pressed: 0,
             shift_pressed: 0,
@@ -283,7 +284,7 @@ impl cosmic::Application for AppModel {
 
     /// Elements to pack at the start of the header bar.
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
-        let menu_bar = menu_bar(self.is_updating, self.view_playlist, &self.key_binds);
+        let menu_bar = menu_bar(self);
         vec![menu_bar.into()]
     }
 
@@ -423,6 +424,33 @@ impl cosmic::Application for AppModel {
                     ]));
                 dialog
             }
+
+            DialogPage::DeleteFromPlaylist => {
+                let view_playlist = self
+                    .playlists
+                    .iter()
+                    .find(|p| p.id() == self.view_playlist.unwrap())
+                    .unwrap();
+
+                let dialog = widget::dialog()
+                    .title(fl!("remove-selected-from-playlist"))
+                    .icon(widget::icon::from_name("dialog-warning").size(64))
+                    .body(format!(
+                        "{} {} {} {}?",
+                        fl!("remove"),
+                        view_playlist.selected_iter().count(),
+                        fl!("tracks-from"),
+                        view_playlist.name()
+                    ))
+                    .primary_action(
+                        widget::button::suggested(fl!("yes")).on_press(Message::DialogComplete),
+                    )
+                    .secondary_action(
+                        widget::button::standard(fl!("cancel")).on_press(Message::DialogCancel),
+                    );
+
+                dialog
+            }
         };
 
         Some(dialog.into())
@@ -542,7 +570,7 @@ impl cosmic::Application for AppModel {
                             }
                             Message::SelectedPaths(paths)
                         }
-                        Err(file_chooser::Error::Cancelled) => Message::AddLibraryCancel,
+                        Err(file_chooser::Error::Cancelled) => Message::Noop,
                         Err(why) => Message::LibraryPathOpenError(Arc::new(why)),
                     }
                 });
@@ -553,8 +581,41 @@ impl cosmic::Application for AppModel {
                 return self.update_config();
             }
 
-            // Cancel message for the Open Folder dialog
-            Message::AddLibraryCancel => {}
+            Message::AddToPlaylist(destination_id) => {
+                let source_id = self.view_playlist.unwrap();
+
+                let source_index = self
+                    .playlists
+                    .iter()
+                    .position(|p| p.id() == source_id)
+                    .unwrap();
+
+                let destination_index = self
+                    .playlists
+                    .iter()
+                    .position(|p| p.id() == destination_id)
+                    .unwrap();
+
+                if source_index == destination_index {
+                    return Task::none();
+                }
+
+                let (source, destination) = if source_index < destination_index {
+                    let (left, right) = self.playlists.split_at_mut(destination_index);
+                    (&mut left[source_index], &mut right[0])
+                } else {
+                    let (left, right) = self.playlists.split_at_mut(source_index);
+                    (&mut right[0], &mut left[destination_index])
+                };
+
+                for track in source.selected().clone() {
+                    let mut track = track.clone();
+                    track.selected = false;
+                    destination.push(track);
+                }
+
+                let _ = self.save_playlists(Some(destination_id));
+            }
 
             Message::ChangeTrack(id) => {
                 // TODO: Make a proper artwork cache
@@ -647,6 +708,15 @@ impl cosmic::Application for AppModel {
                         DialogPage::DeletePlaylist(id) => {
                             let _ = self.delete_playlist(id);
                         }
+
+                        DialogPage::DeleteFromPlaylist => {
+                            if let Some(id) = self.view_playlist {
+                                if let Some(p) = self.playlists.iter_mut().find(|p| p.id() == id) {
+                                    p.remove_selected();
+                                }
+                                let _ = self.save_playlists(Some(id));
+                            }
+                        }
                     };
                 };
             }
@@ -681,11 +751,12 @@ impl cosmic::Application for AppModel {
                                 return self.update(Message::DialogComplete);
                             }
                         }
-                        DialogPage::DeletePlaylist(_) => {
-                            if key == Key::Named(Named::Enter) {
-                                return self.update(Message::DialogComplete);
-                            }
-                        }
+                        DialogPage::DeletePlaylist(_) => {}
+                        DialogPage::DeleteFromPlaylist => {}
+                    }
+
+                    if key == Key::Named(Named::Enter) {
+                        return self.update(Message::DialogComplete);
                     }
                 }
 
@@ -727,21 +798,26 @@ impl cosmic::Application for AppModel {
                 eprintln!("{why}");
             }
 
-            Message::ListSelectRow(id) => match self.control_pressed {
-                0 => {
-                    self.list_selected.clear();
-                    self.list_selected.push(id);
+            Message::ListSelectRow(index) => {
+                let playlist = self
+                    .playlists
+                    .iter_mut()
+                    .find(|p| p.id() == self.view_playlist.unwrap_or(0))
+                    .unwrap();
+
+                if self.control_pressed == 0 {
+                    // Clear selected
+                    playlist.clear_selected();
                 }
-                1..2 => {
-                    if self.list_selected.contains(&id) {
-                        self.list_selected
-                            .remove(self.list_selected.iter().position(|i| i == &id).unwrap());
-                    } else {
-                        self.list_selected.push(id);
-                    }
+
+                // Flip selected
+                let tracks = playlist.tracks();
+                if tracks[index].selected {
+                    playlist.deselect(index);
+                } else {
+                    playlist.select(index);
                 }
-                _ => {}
-            },
+            }
 
             // Handle scroll events from scrollable widgets
             Message::ListViewScroll(viewport) => {
@@ -803,15 +879,26 @@ impl cosmic::Application for AppModel {
                 return widget::text_input::focus(widget::Id::new(NEW_PLAYLIST_INPUT_ID));
             }
 
+            Message::Noop => {}
+
             // Kick off the Rename Playlist dialog
             Message::RenamePlaylist => match self.nav.data(self.nav.active()) {
                 Some(Page::Playlist(id)) => {
-                    let name = self.nav.text(self.nav.active()).unwrap_or("");
-                    self.dialog_pages.push_back(DialogPage::RenamePlaylist {
-                        id: *id,
-                        name: name.into(),
-                    });
-                    return widget::text_input::focus(widget::Id::new(RENAME_PLAYLIST_INPUT_ID));
+                    if self
+                        .playlists
+                        .iter()
+                        .find(|p| p.id() == *id && !p.is_library())
+                        .is_some()
+                    {
+                        let name = self.nav.text(self.nav.active()).unwrap_or("");
+                        self.dialog_pages.push_back(DialogPage::RenamePlaylist {
+                            id: *id,
+                            name: name.into(),
+                        });
+                        return widget::text_input::focus(widget::Id::new(
+                            RENAME_PLAYLIST_INPUT_ID,
+                        ));
+                    }
                 }
                 _ => {}
             },
@@ -851,7 +938,11 @@ impl cosmic::Application for AppModel {
                 if let Some(lib_playlist) = self.playlists.iter_mut().find(|p| p.is_library()) {
                     lib_playlist.clear(); // Clear existing tracks
                     for (path, metadata) in &self.library.media {
-                        lib_playlist.push((path.clone(), metadata.clone()));
+                        let mut track = Track::new();
+                        track.path = path.clone();
+                        track.metadata = metadata.clone();
+
+                        lib_playlist.push(track);
                     }
                     lib_playlist.sort(
                         self.state.sort_by.clone(),
@@ -871,7 +962,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::ReleaseSlider => {
-                // TODO: Don't seek if the player statis isn't playing or paused
+                // TODO: Don't seek if the player status isn't playing or paused
                 self.dragging_progress_slider = false;
                 match self.player.pipeline.seek_simple(
                     gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
@@ -886,6 +977,10 @@ impl cosmic::Application for AppModel {
                 let mut library_paths = self.config.library_paths.clone();
                 library_paths.remove(&path);
                 config_set!(library_paths, library_paths);
+            }
+
+            Message::RemoveSelectedFromPlaylist => {
+                self.dialog_pages.push_back(DialogPage::DeleteFromPlaylist);
             }
 
             // Add selected paths from the Open dialog
@@ -952,6 +1047,10 @@ impl cosmic::Application for AppModel {
                 config_set!(list_text_wrap, list_text_wrap);
             }
 
+            Message::ToggleListRowAlignTop(list_row_align_top) => {
+                config_set!(list_row_align_top, list_row_align_top);
+            }
+
             Message::TogglePlaying => {
                 println!("Play/Pause");
                 self.player.pause();
@@ -969,7 +1068,10 @@ impl cosmic::Application for AppModel {
                 if let Some(lib_playlist) = self.playlists.iter_mut().find(|p| p.is_library()) {
                     lib_playlist.clear(); // Clear existing tracks
                     for (path, metadata) in &self.library.media {
-                        lib_playlist.push((path.clone(), metadata.clone()));
+                        let mut track = Track::new();
+                        track.path = path.clone();
+                        track.metadata = metadata.clone();
+                        lib_playlist.push(track);
                     }
                     lib_playlist.sort(
                         self.state.sort_by.clone(),
@@ -997,6 +1099,8 @@ impl cosmic::Application for AppModel {
                     self.dialog_pages
                         .update_front(DialogPage::DeletePlaylist(id));
                 }
+
+                DialogPage::DeleteFromPlaylist => {}
             },
 
             Message::UpdateLibrary => {
@@ -1333,6 +1437,12 @@ impl AppModel {
                         toggler(self.config.list_text_wrap).on_toggle(Message::ToggleListTextWrap),
                     )
                 })
+                .add({
+                    settings::item::builder(fl!("align-rows-top")).control(
+                        toggler(self.config.list_row_align_top)
+                            .on_toggle(Message::ToggleListRowAlignTop),
+                    )
+                })
                 .into(),
             settings::section()
                 .title(fl!("library"))
@@ -1405,7 +1515,11 @@ impl AppModel {
         // Setup library playlist
         let mut library_playlist = Playlist::library();
         for (path, metadata) in &self.library.media {
-            library_playlist.push((path.clone(), metadata.clone()));
+            let mut track = Track::new();
+            track.path = path.clone();
+            track.metadata = metadata.clone();
+
+            library_playlist.push(track);
         }
 
         library_playlist.sort(
@@ -1417,8 +1531,6 @@ impl AppModel {
         let mut playlists = vec![library_playlist];
         playlists.extend(self.load_playlists().unwrap_or_default());
         self.playlists = playlists;
-
-        println!("There are {} playlists loaded.", self.playlists.len());
 
         // Decide nav order
         let items: Vec<NavPlaylistItem> = if !self.state.playlist_nav_order.is_empty() {
@@ -1509,8 +1621,6 @@ impl AppModel {
         for file in fs::read_dir(playlist_path)? {
             let file = file?;
             let file_path = file.path();
-
-            println!("file found: {}", file_path.to_string_lossy());
 
             if file_path.extension().and_then(|e| e.to_str()) == Some("json") {
                 let contents = fs::read_to_string(&file_path)?;
@@ -1722,6 +1832,8 @@ pub enum ContextPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
     About,
+    AddToPlaylist(u32),
+    RemoveSelectedFromPlaylist,
     DeletePlaylist,
     MoveNavDown,
     MoveNavUp,
@@ -1740,6 +1852,8 @@ impl menu::action::MenuAction for MenuAction {
     fn message(&self) -> Self::Message {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
+            MenuAction::AddToPlaylist(id) => Message::AddToPlaylist(*id),
+            MenuAction::RemoveSelectedFromPlaylist => Message::RemoveSelectedFromPlaylist,
             MenuAction::DeletePlaylist => Message::DeletePlaylist,
             MenuAction::MoveNavDown => Message::MoveNavDown,
             MenuAction::MoveNavUp => Message::MoveNavUp,
@@ -1798,6 +1912,7 @@ pub enum DialogPage {
     NewPlaylist(String),
     RenamePlaylist { id: u32, name: String },
     DeletePlaylist(u32),
+    DeleteFromPlaylist,
 }
 
 pub struct DialogPages {

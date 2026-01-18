@@ -35,6 +35,7 @@ pub struct Config {
     pub app_theme: AppTheme,
     pub library_paths: HashSet<String>,
     pub list_text_wrap: bool,
+    pub list_row_align_top: bool,
 }
 
 impl Config {
@@ -64,6 +65,7 @@ impl Default for Config {
             app_theme: AppTheme::System,
             library_paths: HashSet::new(),
             list_text_wrap: true,
+            list_row_align_top: false,
         }
     }
 }
@@ -83,7 +85,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             playlist_nav_order: Vec::new(),
-            size_multiplier: 4.0,
+            size_multiplier: 8.0,
             sort_by: SortBy::Artist,
             sort_direction: SortDirection::Ascending,
             window_height: 1024.0,

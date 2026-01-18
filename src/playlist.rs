@@ -11,7 +11,7 @@ pub struct Playlist {
     id: u32,
     name: String,
     kind: PlaylistKind,
-    tracks: Vec<(PathBuf, MediaMetaData)>,
+    tracks: Vec<Track>,
 }
 
 impl Playlist {
@@ -60,7 +60,7 @@ impl Playlist {
         self.name = name
     }
 
-    pub fn tracks(&self) -> &[(PathBuf, MediaMetaData)] {
+    pub fn tracks(&self) -> &[Track] {
         &self.tracks
     }
 
@@ -72,11 +72,12 @@ impl Playlist {
         match sort_by {
             SortBy::Artist => {
                 self.tracks.sort_by(|a, b| {
-                    let ordering =
-                        a.1.artist
-                            .cmp(&b.1.artist)
-                            .then(a.1.album.cmp(&b.1.album))
-                            .then(a.1.track_number.cmp(&b.1.track_number));
+                    let ordering = a
+                        .metadata
+                        .artist
+                        .cmp(&b.metadata.artist)
+                        .then(a.metadata.album.cmp(&b.metadata.album))
+                        .then(a.metadata.track_number.cmp(&b.metadata.track_number));
                     match sort_direction {
                         SortDirection::Ascending => ordering,
                         SortDirection::Descending => ordering.reverse(),
@@ -85,7 +86,7 @@ impl Playlist {
             }
             SortBy::Album => {
                 self.tracks.sort_by(|a, b| {
-                    let ordering = a.1.album.cmp(&b.1.album);
+                    let ordering = a.metadata.album.cmp(&b.metadata.album);
                     match sort_direction {
                         SortDirection::Ascending => ordering,
                         SortDirection::Descending => ordering.reverse(),
@@ -94,7 +95,7 @@ impl Playlist {
             }
             SortBy::Title => {
                 self.tracks.sort_by(|a, b| {
-                    let ordering = a.1.title.cmp(&b.1.title);
+                    let ordering = a.metadata.title.cmp(&b.metadata.title);
                     match sort_direction {
                         SortDirection::Ascending => ordering,
                         SortDirection::Descending => ordering.reverse(),
@@ -104,12 +105,32 @@ impl Playlist {
         }
     }
 
-    pub fn push(&mut self, media: (PathBuf, MediaMetaData)) {
-        self.tracks.push(media);
+    pub fn push(&mut self, track: Track) {
+        self.tracks.push(track);
     }
 
-    pub fn remove(&mut self, index: usize) {
-        self.tracks.remove(index);
+    pub fn select(&mut self, index: usize) {
+        self.tracks[index].selected = true;
+    }
+
+    pub fn selected(&self) -> Vec<&Track> {
+        self.tracks.iter().filter(|t| t.selected).collect()
+    }
+
+    pub fn deselect(&mut self, index: usize) {
+        self.tracks[index].selected = false;
+    }
+
+    pub fn clear_selected(&mut self) {
+        self.tracks.iter_mut().for_each(|t| t.selected = false);
+    }
+
+    pub fn remove_selected(&mut self) {
+        self.tracks.retain(|t| !t.selected);
+    }
+
+    pub fn selected_iter(&self) -> impl Iterator<Item = &Track> {
+        self.tracks.iter().filter(|t| t.selected)
     }
 }
 
@@ -120,5 +141,23 @@ impl fmt::Debug for Playlist {
             "Playlist {{ id: {}, name: {}, tracks: {:?} }}",
             self.id, self.name, self.tracks
         )
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Track {
+    pub path: PathBuf,
+    #[serde(skip)]
+    pub selected: bool,
+    pub metadata: MediaMetaData,
+}
+
+impl Track {
+    pub fn new() -> Self {
+        Self {
+            path: PathBuf::new(),
+            selected: false,
+            metadata: MediaMetaData::new(),
+        }
     }
 }

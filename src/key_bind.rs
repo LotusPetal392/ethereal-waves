@@ -28,8 +28,8 @@ pub fn key_binds() -> HashMap<KeyBind, MenuAction> {
     bind!([Ctrl], Key::Character("=".into()), ZoomIn);
     bind!([Ctrl], Key::Character("n".into()), NewPlaylist);
     bind!([], Key::Named(Named::F2), RenamePlaylist);
-    bind!([Ctrl, Shift], Key::Named(Named::ArrowUp), MoveNavUp);
-    bind!([Ctrl, Shift], Key::Named(Named::ArrowDown), MoveNavDown);
+    bind!([Ctrl], Key::Named(Named::ArrowUp), MoveNavUp);
+    bind!([Ctrl], Key::Named(Named::ArrowDown), MoveNavDown);
 
     key_binds
 }

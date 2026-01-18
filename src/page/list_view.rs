@@ -15,8 +15,16 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
         ..
     } = theme::active().cosmic().spacing;
 
+    let mut list_start = app.list_start;
+
     let tracks_len = active_playlist.len();
-    let list_end = (app.list_start + app.list_visible_row_count + 1).min(tracks_len);
+    let list_end = (list_start + app.list_visible_row_count + 1).min(tracks_len);
+
+    if list_start >= list_end {
+        list_start = 0 as usize;
+    }
+
+    let take = list_end.saturating_sub(list_start);
 
     // Calculations for row height
     let row_stride: f32 = app.list_row_height + app.list_divider_height;
@@ -29,12 +37,18 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
         SortDirection::Descending => "pan-up-symbolic".into(),
     };
 
+    let align = if app.config.list_row_align_top {
+        Alignment::Start
+    } else {
+        Alignment::Center
+    };
+
     let mut content = widget::column();
 
-    // Header row
     content = content.push(
         widget::row()
             .spacing(space_xxs)
+            .push(widget::horizontal_space().width(space_xxxs))
             .push(
                 widget::text::heading("#")
                     .align_x(Alignment::End)
@@ -94,11 +108,11 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
                 .padding(0)
                 .width(Length::FillPortion(1)),
             )
-            .push(widget::horizontal_space().width(space_xxxs / 2)),
+            .push(widget::horizontal_space().width(space_xxs)),
     );
     content = content.push(widget::divider::horizontal::default());
 
-    let mut count: u32 = app.list_start as u32 + 1;
+    let mut count: u32 = list_start as u32 + 1;
 
     let wrapping = if app.config.list_text_wrap {
         Wrapping::Word
@@ -108,69 +122,81 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
 
     let mut rows = widget::column();
 
-    rows = rows
-        .push(widget::vertical_space().height(Length::Fixed(app.list_start as f32 * row_stride)));
+    rows =
+        rows.push(widget::vertical_space().height(Length::Fixed(list_start as f32 * row_stride)));
 
-    for (index, (path, metadata)) in active_playlist
+    for (index, track) in active_playlist
         .tracks()
         .iter()
-        .skip(app.list_start)
-        .take(list_end - app.list_start)
+        .skip(list_start)
+        .take(take)
         .enumerate()
     {
-        let id = metadata.id.clone().unwrap();
+        let id = track.metadata.id.clone().unwrap();
 
-        let row_button = widget::button::custom(
-            widget::row()
-                .spacing(space_xxs)
-                .height(Length::Fixed(app.list_row_height))
-                .push(
-                    widget::container(
-                        widget::text(count.to_string())
-                            .width(Length::Fixed(number_column_width))
-                            .align_x(Alignment::End),
-                    )
-                    .clip(true),
+        let row_element = widget::row()
+            .spacing(space_xxs)
+            .height(Length::Fixed(app.list_row_height))
+            .push(
+                widget::container(
+                    widget::text(count.to_string())
+                        .width(Length::Fixed(number_column_width))
+                        .align_x(Alignment::End)
+                        .align_y(align)
+                        .height(app.list_row_height),
                 )
-                .push(
-                    widget::container(
-                        widget::text(
-                            metadata
-                                .title
-                                .clone()
-                                .unwrap_or_else(|| path.to_string_lossy().to_string()),
-                        )
+                .clip(true),
+            )
+            .push(
+                widget::container(
+                    widget::text(
+                        track
+                            .metadata
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| track.path.to_string_lossy().to_string()),
+                    )
+                    .align_y(align)
+                    .height(app.list_row_height)
+                    .wrapping(wrapping)
+                    .width(Length::FillPortion(1)),
+                )
+                .clip(true),
+            )
+            .push(
+                widget::container(
+                    widget::text(track.metadata.album.clone().unwrap_or_default())
+                        .align_y(align)
+                        .height(app.list_row_height)
                         .wrapping(wrapping)
                         .width(Length::FillPortion(1)),
-                    )
-                    .clip(true),
                 )
-                .push(
-                    widget::container(
-                        widget::text(metadata.album.clone().unwrap_or_default())
-                            .wrapping(wrapping)
-                            .width(Length::FillPortion(1)),
-                    )
-                    .clip(true),
+                .clip(true),
+            )
+            .push(
+                widget::container(
+                    widget::text(track.metadata.artist.clone().unwrap_or_default())
+                        .align_y(align)
+                        .height(app.list_row_height)
+                        .wrapping(wrapping)
+                        .width(Length::FillPortion(1)),
                 )
-                .push(
-                    widget::container(
-                        widget::text(metadata.artist.clone().unwrap_or_default())
-                            .wrapping(wrapping)
-                            .width(Length::FillPortion(1)),
-                    )
-                    .clip(true),
-                )
-                .width(Length::Fill),
-        )
-        .class(button_style(app.list_selected.contains(&id), false))
-        .on_press_down(Message::ChangeTrack(id.clone()))
-        .padding(0);
+                .clip(true),
+            )
+            .width(Length::Fill);
 
-        rows = rows
-            .push(widget::mouse_area(row_button).on_release(Message::ListSelectRow(id.clone())));
+        let row_button = widget::button::custom(row_element)
+            .class(button_style(track.selected, false))
+            .on_press_down(Message::ChangeTrack(id.clone()))
+            .padding(0);
 
-        let is_last_visible = index + 1 == (list_end - app.list_start);
+        rows = rows.push(
+            widget::mouse_area(row_button)
+                .on_release(Message::ListSelectRow(count.saturating_sub(1) as usize)),
+        );
+
+        let visible_count = list_end.saturating_sub(list_start);
+        let is_last_visible = index + 1 == visible_count;
         if !is_last_visible {
             rows = rows.push(
                 widget::container(widget::divider::horizontal::default())

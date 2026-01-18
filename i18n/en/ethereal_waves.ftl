@@ -28,6 +28,11 @@ zoom-out = Zoom Out
 quit = Quit
 about-ethereal-waves = About Ethereal Waves...
 settings-menu = Settings...
+add-selected-to = Add Selected To
+remove-selected = Remove Selected
+remove-selected-from-playlist = Remove Selected Tracks From Playlist
+remove = Remove
+tracks-from = Tracks From
 
 # Dialog
 yes = Yes
@@ -48,6 +53,7 @@ settings = Settings
 appearance = Appearance
 theme = Theme
 add-location = Add Location
+align-rows-top = Align Rows To The Top
 
 number = #
 title = Title

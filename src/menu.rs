@@ -1,24 +1,48 @@
-use crate::app::{MenuAction, Message};
+use crate::app::{AppModel, MenuAction, Message};
 use crate::fl;
-use cosmic::{
-    Apply, Element,
-    widget::menu::{self, key_bind::KeyBind},
-};
-use std::collections::HashMap;
+use cosmic::{Apply, Element, widget::menu};
 
-pub fn menu_bar<'a>(
-    is_updating: bool,
-    view_playlist: Option<u32>,
-    key_binds: &HashMap<KeyBind, MenuAction>,
-) -> Element<'a, Message> {
-    let has_playlist = view_playlist.is_some();
+pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
+    let has_playlist = app.view_playlist.is_some();
+
+    let selected_playlist = app
+        .playlists
+        .iter()
+        .find(|p| p.id() == app.view_playlist.unwrap())
+        .unwrap();
+
+    let mut playlists_list = Vec::new();
+
+    // Add ordered playlists
+    app.state.playlist_nav_order.iter().for_each(|p| {
+        let playlist = app.playlists.iter().find(|playlist| playlist.id() == *p);
+        if playlist.is_some() {
+            playlists_list.push(menu::Item::Button(
+                playlist.unwrap().name().to_string(),
+                None,
+                MenuAction::AddToPlaylist(playlist.unwrap().id()),
+            ));
+        }
+    });
+    // Add unordered playlists
+    app.playlists
+        .iter()
+        .filter(|p| !p.is_library() && !app.state.playlist_nav_order.contains(&p.id()))
+        .for_each(|p| {
+            playlists_list.push(menu::Item::Button(
+                p.name().to_string(),
+                None,
+                MenuAction::AddToPlaylist(p.id()),
+            ));
+        });
+
     menu::bar(vec![
         menu::Tree::with_children(
             menu::root(fl!("file")).apply(Element::from),
             menu::items(
-                key_binds,
+                &app.key_binds,
                 vec![
-                    if is_updating {
+                    if app.is_updating {
                         menu::Item::ButtonDisabled(
                             fl!("update-library"),
                             None,
@@ -35,10 +59,10 @@ pub fn menu_bar<'a>(
         menu::Tree::with_children(
             menu::root(fl!("playlist")).apply(Element::from),
             menu::items(
-                key_binds,
+                &app.key_binds,
                 vec![
                     menu::Item::Button(fl!("new-playlist-menu"), None, MenuAction::NewPlaylist),
-                    if has_playlist {
+                    if !selected_playlist.is_library() {
                         menu::Item::Button(
                             fl!("rename-playlist-menu"),
                             None,
@@ -51,7 +75,7 @@ pub fn menu_bar<'a>(
                             MenuAction::RenamePlaylist,
                         )
                     },
-                    if has_playlist {
+                    if !selected_playlist.is_library() {
                         menu::Item::Button(
                             fl!("delete-playlist-menu"),
                             None,
@@ -62,6 +86,21 @@ pub fn menu_bar<'a>(
                             fl!("delete-playlist-menu"),
                             None,
                             MenuAction::DeletePlaylist,
+                        )
+                    },
+                    menu::Item::Divider,
+                    menu::Item::Folder(fl!("add-selected-to"), playlists_list),
+                    if has_playlist && !selected_playlist.is_library() {
+                        menu::Item::Button(
+                            fl!("remove-selected"),
+                            None,
+                            MenuAction::RemoveSelectedFromPlaylist,
+                        )
+                    } else {
+                        menu::Item::ButtonDisabled(
+                            fl!("remove-selected"),
+                            None,
+                            MenuAction::RemoveSelectedFromPlaylist,
                         )
                     },
                     menu::Item::Divider,
@@ -81,7 +120,7 @@ pub fn menu_bar<'a>(
         menu::Tree::with_children(
             menu::root(fl!("view")).apply(Element::from),
             menu::items(
-                key_binds,
+                &app.key_binds,
                 vec![
                     menu::Item::Button(fl!("zoom-in"), None, MenuAction::ZoomIn),
                     menu::Item::Button(fl!("zoom-out"), None, MenuAction::ZoomOut),
