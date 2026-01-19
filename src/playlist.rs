@@ -134,7 +134,6 @@ impl Playlist {
     }
 
     pub fn select_range(&mut self, start: usize, end: usize) {
-        println!("range: start: {:?} end: {:?}", start, end);
         if start < end {
             for i in start..=end {
                 self.tracks[i].selected = true;

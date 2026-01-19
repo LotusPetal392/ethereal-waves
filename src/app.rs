@@ -807,10 +807,7 @@ impl cosmic::Application for AppModel {
                     .find(|p| p.id() == self.view_playlist.unwrap_or(0))
                     .unwrap();
 
-                if self.control_pressed > 0
-                    && self.shift_pressed > 0
-                    && self.list_last_selected_id.is_some()
-                {
+                if self.shift_pressed > 0 && self.list_last_selected_id.is_some() {
                     playlist.select_range(index, self.list_last_selected_id.unwrap());
                 } else {
                     if self.control_pressed == 0 {
@@ -827,7 +824,11 @@ impl cosmic::Application for AppModel {
                     }
                 }
 
-                self.list_last_selected_id = Some(index);
+                if playlist.selected_iter().count() > 0 {
+                    self.list_last_selected_id = Some(index);
+                } else {
+                    self.list_last_selected_id = None;
+                }
             }
 
             // Handle scroll events from scrollable widgets
