@@ -132,6 +132,19 @@ impl Playlist {
     pub fn selected_iter(&self) -> impl Iterator<Item = &Track> {
         self.tracks.iter().filter(|t| t.selected)
     }
+
+    pub fn select_range(&mut self, start: usize, end: usize) {
+        println!("range: start: {:?} end: {:?}", start, end);
+        if start < end {
+            for i in start..=end {
+                self.tracks[i].selected = true;
+            }
+        } else if end < start {
+            for i in end..=start {
+                self.tracks[i].selected = true;
+            }
+        }
+    }
 }
 
 impl fmt::Debug for Playlist {

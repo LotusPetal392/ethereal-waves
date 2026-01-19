@@ -117,6 +117,7 @@ pub struct AppModel {
     pub list_start: usize,
     pub list_visible_row_count: usize,
     list_last_clicked: Option<Instant>,
+    list_last_selected_id: Option<usize>,
 
     control_pressed: u8,
     shift_pressed: u8,
@@ -260,6 +261,7 @@ impl cosmic::Application for AppModel {
             list_start: 0,
             list_visible_row_count: 0,
             list_last_clicked: None,
+            list_last_selected_id: None,
             control_pressed: 0,
             shift_pressed: 0,
             playlists: Vec::new(),
@@ -805,18 +807,27 @@ impl cosmic::Application for AppModel {
                     .find(|p| p.id() == self.view_playlist.unwrap_or(0))
                     .unwrap();
 
-                if self.control_pressed == 0 {
-                    // Clear selected
-                    playlist.clear_selected();
+                if self.control_pressed > 0
+                    && self.shift_pressed > 0
+                    && self.list_last_selected_id.is_some()
+                {
+                    playlist.select_range(index, self.list_last_selected_id.unwrap());
+                } else {
+                    if self.control_pressed == 0 {
+                        // Clear selected
+                        playlist.clear_selected();
+                    }
+
+                    // Flip selected
+                    let tracks = playlist.tracks();
+                    if tracks[index].selected {
+                        playlist.deselect(index);
+                    } else {
+                        playlist.select(index);
+                    }
                 }
 
-                // Flip selected
-                let tracks = playlist.tracks();
-                if tracks[index].selected {
-                    playlist.deselect(index);
-                } else {
-                    playlist.select(index);
-                }
+                self.list_last_selected_id = Some(index);
             }
 
             // Handle scroll events from scrollable widgets
@@ -1326,6 +1337,9 @@ impl cosmic::Application for AppModel {
         self.nav.activate(id);
 
         if let Some(Page::Playlist(pid)) = self.nav.data(id) {
+            if self.view_playlist != Some(*pid) {
+                self.list_last_selected_id = None;
+            }
             self.view_playlist = Some(*pid);
         }
 
