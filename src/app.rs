@@ -24,6 +24,7 @@ use cosmic::{
         self, Alignment, Length, Size, Subscription,
         alignment::{Horizontal, Vertical},
         event::{self, Event},
+        font::{Font, Weight},
         keyboard::{Event as KeyEvent, Key, Modifiers, key::Named},
         window::Event as WindowEvent,
     },
@@ -344,6 +345,11 @@ impl cosmic::Application for AppModel {
                 Message::ToggleContextPage(ContextPage::Settings),
             )
             .title(fl!("settings")),
+            ContextPage::TrackInfo => context_drawer::context_drawer(
+                self.track_info_panel(),
+                Message::ToggleContextPage(ContextPage::TrackInfo),
+            )
+            .title(fl!("track-info")),
         })
     }
 
@@ -1512,6 +1518,79 @@ impl AppModel {
         .into()
     }
 
+    /// Track info panel
+    fn track_info_panel(&self) -> Element<'_, Message> {
+        let cosmic_theme::Spacing { space_xs, .. } = theme::active().cosmic().spacing;
+
+        let active_playlist = self
+            .playlists
+            .iter()
+            .find(|p| p.id() == self.view_playlist.unwrap_or(0));
+
+        let tracks = active_playlist.unwrap().selected();
+
+        let mut column = widget::column().spacing(space_xs);
+
+        for (i, t) in tracks.iter().enumerate().take(10) {
+            let container = widget::container(
+                widget::column()
+                    .push(track_info_row(
+                        fl!("title"),
+                        t.metadata.title.clone().unwrap(),
+                    ))
+                    .push(track_info_row(
+                        fl!("album"),
+                        t.metadata.album.clone().unwrap(),
+                    ))
+                    .push(track_info_row(
+                        fl!("artist"),
+                        t.metadata.artist.clone().unwrap(),
+                    ))
+                    .push(track_info_row(
+                        fl!("album-artist"),
+                        t.metadata.album_artist.clone().unwrap(),
+                    ))
+                    .push(track_info_row(
+                        fl!("genre"),
+                        t.metadata.genre.clone().unwrap(),
+                    ))
+                    .push(track_info_row(
+                        fl!("album-disc-number"),
+                        t.metadata.album_disc_number.clone().unwrap().to_string(),
+                    ))
+                    .push(track_info_row(
+                        fl!("album-disc-count"),
+                        t.metadata.album_disc_count.clone().unwrap().to_string(),
+                    ))
+                    .push(track_info_row(
+                        fl!("track-number"),
+                        t.metadata.track_number.clone().unwrap().to_string(),
+                    ))
+                    .push(track_info_row(
+                        fl!("track-count"),
+                        t.metadata.track_count.clone().unwrap().to_string(),
+                    ))
+                    .push(track_info_row(
+                        fl!("duration"),
+                        t.metadata.title.clone().unwrap().to_string(),
+                    ))
+                    .push(
+                        widget::row()
+                            .width(Length::Fill)
+                            .push(widget::text(t.path.to_string_lossy())),
+                    ),
+            );
+
+            if i > 0 {
+                column = column.push(widget::divider::horizontal::light())
+            }
+
+            column = column.push(container);
+        }
+
+        column.into()
+    }
+
     /// Updates the cosmic config, in particular the theme
     fn update_config(&mut self) -> Task<cosmic::Action<Message>> {
         cosmic::command::set_theme(self.config.app_theme.theme())
@@ -1887,6 +1966,7 @@ pub enum ContextPage {
     #[default]
     About,
     Settings,
+    TrackInfo,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1901,6 +1981,7 @@ pub enum MenuAction {
     Quit,
     RenamePlaylist,
     Settings,
+    TrackInfoPanel,
     UpdateLibrary,
     ZoomIn,
     ZoomOut,
@@ -1921,6 +2002,7 @@ impl menu::action::MenuAction for MenuAction {
             MenuAction::RenamePlaylist => Message::RenamePlaylist,
             MenuAction::Quit => Message::Quit,
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
+            MenuAction::TrackInfoPanel => Message::ToggleContextPage(ContextPage::TrackInfo),
             MenuAction::UpdateLibrary => Message::UpdateLibrary,
             MenuAction::ZoomIn => Message::ZoomIn,
             MenuAction::ZoomOut => Message::ZoomOut,
@@ -2035,4 +2117,22 @@ pub enum PlaylistKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ViewMode {
     List,
+}
+
+fn track_info_row<'a>(title: String, data: String) -> widget::Row<'a, Message> {
+    let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
+
+    widget::row()
+        .push(
+            widget::text(title)
+                .width(Length::FillPortion(1))
+                .align_x(Alignment::End)
+                .font(Font {
+                    weight: Weight::Bold,
+                    ..Font::default()
+                }),
+        )
+        .push(widget::text(data).width(Length::FillPortion(1)))
+        .spacing(space_xxs)
+        .width(Length::Fill)
 }

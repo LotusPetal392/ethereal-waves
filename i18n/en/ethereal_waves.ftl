@@ -33,6 +33,8 @@ remove-selected = Remove Selected
 remove-selected-from-playlist = Remove Selected Tracks From Playlist
 remove = Remove
 tracks-from = Tracks From
+... = ...
+track-info = Track Info
 
 # Dialog
 yes = Yes
@@ -59,6 +61,13 @@ number = #
 title = Title
 album = Album
 artist = Artist
+album-artist = Album Artist
+genre = Genre
+album-disc-number = Album Disc Number
+album-disc-count = Album Disc Count
+track-number = Track Number
+track-count = Track Count
+duration = Duration
 
 # Empty library page
 go-to-view = Go to View /

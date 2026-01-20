@@ -13,6 +13,17 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
 
     let mut playlists_list = Vec::new();
 
+    let selected_count: usize = if app.view_playlist.is_some() {
+        app.playlists
+            .iter()
+            .find(|p| p.id() == app.view_playlist.unwrap())
+            .unwrap()
+            .selected_iter()
+            .count()
+    } else {
+        0
+    };
+
     // Add ordered playlists
     app.state.playlist_nav_order.iter().for_each(|p| {
         let playlist = app.playlists.iter().find(|playlist| playlist.id() == *p);
@@ -42,6 +53,16 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
             menu::items(
                 &app.key_binds,
                 vec![
+                    if selected_count > 0 {
+                        menu::Item::Button(fl!("track-info"), None, MenuAction::TrackInfoPanel)
+                    } else {
+                        menu::Item::ButtonDisabled(
+                            fl!("track-info"),
+                            None,
+                            MenuAction::TrackInfoPanel,
+                        )
+                    },
+                    menu::Item::Divider,
                     if app.is_updating {
                         menu::Item::ButtonDisabled(
                             fl!("update-library"),
