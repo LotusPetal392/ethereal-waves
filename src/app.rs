@@ -125,6 +125,9 @@ pub struct AppModel {
     pub playlists: Vec<crate::playlist::Playlist>,
     pub view_playlist: Option<u32>,
     audio_playlist: Option<u32>,
+
+    search_id: widget::Id,
+    pub search_term: Option<String>,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -156,6 +159,9 @@ pub enum Message {
     RemoveLibraryPath(String),
     RemoveSelectedFromPlaylist,
     RenamePlaylist,
+    SearchActivate,
+    SearchClear,
+    SearchInput(String),
     SelectedPaths(Vec<String>),
     SliderSeek(f32),
     Tick,
@@ -267,6 +273,8 @@ impl cosmic::Application for AppModel {
             playlists: Vec::new(),
             view_playlist: None,
             audio_playlist: None,
+            search_id: widget::Id::new("Text Search"),
+            search_term: None,
         };
 
         // Create a startup command that sets the window title.
@@ -288,6 +296,30 @@ impl cosmic::Application for AppModel {
     fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
         let menu_bar = menu_bar(self);
         vec![menu_bar.into()]
+    }
+
+    fn header_end(&self) -> Vec<Element<'_, Self::Message>> {
+        let mut elements = Vec::with_capacity(1);
+
+        if self.search_term.is_some() {
+            elements.push(
+                widget::text_input::search_input("", self.search_term.clone().unwrap())
+                    .width(Length::Fixed(240.0))
+                    .id(self.search_id.clone())
+                    .on_clear(Message::SearchClear)
+                    .on_input(Message::SearchInput)
+                    .into(),
+            );
+        } else {
+            elements.push(
+                widget::button::icon(widget::icon::from_name("system-search-symbolic"))
+                    .on_press(Message::SearchActivate)
+                    .padding(8)
+                    .into(),
+            );
+        }
+
+        elements
     }
 
     /// Enables the COSMIC application to create a nav bar with this model.
@@ -993,6 +1025,19 @@ impl cosmic::Application for AppModel {
 
             Message::RemoveSelectedFromPlaylist => {
                 self.dialog_pages.push_back(DialogPage::DeleteFromPlaylist);
+            }
+
+            Message::SearchActivate => {
+                self.search_term = Some(String::new());
+                return widget::text_input::focus(self.search_id.clone());
+            }
+
+            Message::SearchClear => {
+                self.search_term = None;
+            }
+
+            Message::SearchInput(term) => {
+                self.search_term = Some(term);
             }
 
             // Add selected paths from the Open dialog

@@ -1,6 +1,7 @@
 use crate::app::{AppModel, Message, SortBy, SortDirection};
 use crate::fl;
 use crate::playlist::Playlist;
+use crate::playlist::Track;
 use cosmic::iced_core::text::Wrapping;
 use cosmic::{
     cosmic_theme,
@@ -15,9 +16,37 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
         ..
     } = theme::active().cosmic().spacing;
 
+    let search = app.search_term.as_deref().unwrap_or("").to_lowercase();
+
+    let tracks: Vec<(usize, Track)> = if app.search_term.is_some() {
+        active_playlist
+            .tracks()
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(_, t)| {
+                [
+                    t.metadata.title.as_deref(),
+                    t.metadata.album.as_deref(),
+                    t.metadata.artist.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|v| v.to_lowercase().contains(&search))
+            })
+            .collect::<Vec<(usize, Track)>>()
+    } else {
+        active_playlist
+            .tracks()
+            .iter()
+            .cloned()
+            .enumerate()
+            .collect()
+    };
+
     let mut list_start = app.list_start;
 
-    let tracks_len = active_playlist.len();
+    let tracks_len = tracks.len();
     let list_end = (list_start + app.list_visible_row_count + 1).min(tracks_len);
 
     if list_start >= list_end {
@@ -125,14 +154,8 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
     rows =
         rows.push(widget::vertical_space().height(Length::Fixed(list_start as f32 * row_stride)));
 
-    for (index, track) in active_playlist
-        .tracks()
-        .iter()
-        .skip(list_start)
-        .take(take)
-        .enumerate()
-    {
-        let id = track.metadata.id.clone().unwrap();
+    for (index, track) in tracks.iter().skip(list_start).take(take).enumerate() {
+        let id = track.1.metadata.id.clone().unwrap();
 
         let row_element = widget::row()
             .spacing(space_xxs)
@@ -151,10 +174,11 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
                 widget::container(
                     widget::text(
                         track
+                            .1
                             .metadata
                             .title
                             .clone()
-                            .unwrap_or_else(|| track.path.to_string_lossy().to_string()),
+                            .unwrap_or_else(|| track.1.path.to_string_lossy().to_string()),
                     )
                     .align_y(align)
                     .height(app.list_row_height)
@@ -165,7 +189,7 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
             )
             .push(
                 widget::container(
-                    widget::text(track.metadata.album.clone().unwrap_or_default())
+                    widget::text(track.1.metadata.album.clone().unwrap_or_default())
                         .align_y(align)
                         .height(app.list_row_height)
                         .wrapping(wrapping)
@@ -175,7 +199,7 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
             )
             .push(
                 widget::container(
-                    widget::text(track.metadata.artist.clone().unwrap_or_default())
+                    widget::text(track.1.metadata.artist.clone().unwrap_or_default())
                         .align_y(align)
                         .height(app.list_row_height)
                         .wrapping(wrapping)
@@ -186,14 +210,12 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
             .width(Length::Fill);
 
         let row_button = widget::button::custom(row_element)
-            .class(button_style(track.selected, false))
+            .class(button_style(track.1.selected, false))
             .on_press_down(Message::ChangeTrack(id.clone()))
             .padding(0);
 
-        rows = rows.push(
-            widget::mouse_area(row_button)
-                .on_release(Message::ListSelectRow(count.saturating_sub(1) as usize)),
-        );
+        rows =
+            rows.push(widget::mouse_area(row_button).on_release(Message::ListSelectRow(track.0)));
 
         let visible_count = list_end.saturating_sub(list_start);
         let is_last_visible = index + 1 == visible_count;
