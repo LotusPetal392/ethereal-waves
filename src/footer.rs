@@ -1,6 +1,7 @@
 use crate::app::{AppModel, Message};
 use crate::fl;
 use crate::library::MediaMetaData;
+use cosmic::widget::tooltip::Position;
 use cosmic::{
     Element, cosmic_theme,
     iced::{
@@ -9,6 +10,8 @@ use cosmic::{
     },
     theme, widget,
 };
+use gst::State;
+use gstreamer as gst;
 
 pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
     let cosmic_theme::Spacing {
@@ -46,14 +49,22 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
         .now_playing_handle
         .as_ref()
         .map(|handle| {
-            widget::image(handle)
-                .height(artwork_size)
-                .width(artwork_size)
+            widget::row()
+                .align_y(Alignment::Center)
+                .width(Length::Fixed(artwork_size as f32))
+                .height(Length::Fixed(artwork_size as f32))
+                .push(
+                    widget::image(handle)
+                        .height(artwork_size)
+                        .width(artwork_size),
+                )
                 .into()
         })
         .unwrap_or_else(|| {
-            widget::icon::from_name("folder-music-symbolic")
-                .size(artwork_size)
+            widget::layer_container(widget::row())
+                .layer(cosmic_theme::Layer::Secondary)
+                .width(Length::Fixed(artwork_size as f32))
+                .height(Length::Fixed(artwork_size as f32))
                 .into()
         });
 
@@ -84,6 +95,12 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
             .push(now_playing_text),
     );
 
+    let play_icon = match app.player.get_current_state() {
+        State::Null => "media-playback-start-symbolic",
+        State::Paused => "media-playback-start-symbolic",
+        _ => "media-playback-pause-symbolic",
+    };
+
     // Playback controls column
     let playback_control_column = widget::column()
         .width(Length::FillPortion(2))
@@ -113,29 +130,58 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
                 .spacing(space_xxs)
                 .width(Length::Fill)
                 .push(widget::horizontal_space().width(Length::Fill))
-                .push(
+                .push(widget::tooltip(
                     widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
                         .on_press(Message::Previous)
                         .padding(space_xs)
                         .icon_size(space_m),
-                )
-                .push(
-                    widget::button::icon(widget::icon::from_name("media-playback-start-symbolic"))
+                    widget::text(fl!("previous")),
+                    Position::Bottom,
+                ))
+                .push(widget::tooltip(
+                    widget::button::icon(widget::icon::from_name(play_icon))
                         .on_press(Message::TogglePlaying)
                         .padding(space_xs)
                         .icon_size(space_l),
-                )
-                .push(
+                    widget::text(fl!("play")),
+                    Position::Bottom,
+                ))
+                .push(widget::tooltip(
                     widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
                         .on_press(Message::Next)
                         .padding(space_xs)
                         .icon_size(space_m),
-                )
+                    widget::text(fl!("next")),
+                    Position::Bottom,
+                ))
                 .push(widget::horizontal_space().width(Length::Fill)),
         );
 
     // Other controls column
-    let other_controls_column = widget::horizontal_space().width(Length::FillPortion(1));
+    let volume_icon = if app.state.muted {
+        "audio-volume-muted-symbolic"
+    } else {
+        match app.state.volume {
+            0..=33 => "audio-volume-low-symbolic",
+            34..=66 => "audio-volume-medium-symbolic",
+            67..=100 => "audio-volume-high-symbolic",
+            _ => "audio-volume-high-symbolic",
+        }
+    };
+
+    let other_controls_column = widget::column().width(Length::FillPortion(1)).push(
+        widget::row()
+            .align_y(Alignment::Center)
+            .push(
+                widget::button::icon(widget::icon::from_name(volume_icon))
+                    .on_press(Message::ToggleMute),
+            )
+            .push(widget::slider(
+                0..=100,
+                app.state.volume,
+                Message::SetVolume,
+            )),
+    );
 
     let control_row = widget::row()
         .spacing(space_xxs)

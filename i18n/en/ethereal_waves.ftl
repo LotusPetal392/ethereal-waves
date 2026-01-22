@@ -33,8 +33,11 @@ remove-selected = Remove Selected
 remove-selected-from-playlist = Remove Selected Tracks From Playlist
 remove = Remove
 tracks-from = Tracks From
-... = ...
 track-info = Track Info
+
+previous = Previous
+play = Play
+next = Next
 
 # Dialog
 yes = Yes

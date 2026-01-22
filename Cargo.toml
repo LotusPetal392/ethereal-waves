@@ -8,6 +8,7 @@ repository = "https://github.com/LotusPetal392/ethereal-waves"
 
 [dependencies]
 anyhow = "1.0.100"
+chrono = "0.4.43"
 futures-util = "0.3.31"
 gstreamer = "0.24.4"
 gstreamer-audio = "0.24.4"

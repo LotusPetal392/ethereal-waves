@@ -73,10 +73,12 @@ impl Default for Config {
 #[derive(Clone, CosmicConfigEntry, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 pub struct State {
+    pub muted: bool,
     pub playlist_nav_order: Vec<u32>,
     pub size_multiplier: f32,
     pub sort_by: SortBy,
     pub sort_direction: SortDirection,
+    pub volume: i32,
     pub window_height: f32,
     pub window_width: f32,
 }
@@ -84,10 +86,12 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            muted: false,
             playlist_nav_order: Vec::new(),
             size_multiplier: 8.0,
             sort_by: SortBy::Artist,
             sort_direction: SortDirection::Ascending,
+            volume: 100,
             window_height: 1024.0,
             window_width: 768.0,
         }

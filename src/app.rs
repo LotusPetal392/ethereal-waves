@@ -78,6 +78,7 @@ pub struct AppModel {
     pub config: Config,
     /// Settings page / app theme dropdown labels
     app_theme_labels: Vec<String>,
+    pub is_condensed: bool,
 
     config_handler: Option<cosmic_config::Config>,
     state_handler: Option<cosmic_config::Config>,
@@ -97,7 +98,7 @@ pub struct AppModel {
 
     initial_load_complete: bool,
 
-    player: Player,
+    pub player: Player,
 
     dialog_pages: DialogPages,
 
@@ -164,11 +165,13 @@ pub enum Message {
     SearchClear,
     SearchInput(String),
     SelectedPaths(Vec<String>),
+    SetVolume(i32),
     SliderSeek(f32),
     Tick,
     ToggleContextPage(ContextPage),
     ToggleListRowAlignTop(bool),
     ToggleListTextWrap(bool),
+    ToggleMute,
     TogglePlaying,
     UpdateComplete(Library),
     UpdateConfig(Config),
@@ -238,6 +241,7 @@ impl cosmic::Application for AppModel {
                 })
                 .unwrap_or_default(),
             app_theme_labels: vec![fl!("match-desktop"), fl!("dark"), fl!("light")],
+            is_condensed: false,
             config_handler: _flags.config_handler,
             state_handler: _flags.state_handler,
             state: _flags.state.clone(),
@@ -540,6 +544,8 @@ impl cosmic::Application for AppModel {
     /// Tasks may be returned for asynchronous execution of code in the background
     /// on the application's async runtime.
     fn update(&mut self, message: Self::Message) -> cosmic::Task<cosmic::Action<Self::Message>> {
+        self.is_condensed = self.core().is_condensed();
+
         // Helper for updating configuration
         macro_rules! config_set {
             ($name: ident, $value: expr) => {
@@ -671,11 +677,12 @@ impl cosmic::Application for AppModel {
 
                     if elapsed <= Duration::from_millis(400) {
                         println!("Change track: {:?}", media_metadata.title);
-                        self.player.stop();
+                        let _ = self.player.stop();
                         self.now_playing = Some(media_metadata.clone());
                         self.player.load(uri.as_str());
-                        self.player.play();
+                        let _ = self.player.play();
 
+                        // Load artwork
                         if media_metadata.artwork_filename.is_some() {
                             let filename = media_metadata.artwork_filename.clone().unwrap();
 
@@ -1007,7 +1014,7 @@ impl cosmic::Application for AppModel {
 
             Message::Quit => {
                 print!("Quit message sent");
-                self.player.stop();
+                let _ = self.player.stop();
                 process::exit(0);
             }
 
@@ -1057,6 +1064,11 @@ impl cosmic::Application for AppModel {
                 config_set!(library_paths, library_paths);
             }
 
+            Message::SetVolume(volume) => {
+                state_set!(volume, volume);
+                self.player.set_volume(volume as f64 / 100.0);
+            }
+
             Message::SliderSeek(time) => {
                 self.dragging_progress_slider = true;
                 self.playback_progress = time;
@@ -1068,6 +1080,11 @@ impl cosmic::Application for AppModel {
                 while let Some(msg) = bus.pop() {
                     use gst::MessageView;
                     match msg.view() {
+                        MessageView::StateChanged(s) => {
+                            if s.src().map(|s| *s == self.player.pipeline).unwrap_or(false) {
+                                self.player.set_current_state(s.current());
+                            }
+                        }
                         MessageView::Eos(..) => {
                             println!("End of stream.");
                             return self.update(Message::Next);
@@ -1114,9 +1131,29 @@ impl cosmic::Application for AppModel {
                 config_set!(list_row_align_top, list_row_align_top);
             }
 
+            Message::ToggleMute => {
+                let muted = !self.state.muted;
+                if muted {
+                    self.player.set_volume(0.0);
+                } else {
+                    self.player.set_volume(self.state.volume as f64 / 100.0);
+                }
+                state_set!(muted, muted);
+            }
+
             Message::TogglePlaying => {
-                println!("Play/Pause");
-                self.player.pause();
+                println!("{:?}", self.player.get_current_state());
+                match self.player.get_current_state() {
+                    gst::State::Paused => {
+                        println!("Unpause");
+                        let _ = self.player.play();
+                    }
+                    gst::State::Playing => {
+                        println!("Pause");
+                        let _ = self.player.pause();
+                    }
+                    _ => {}
+                }
             }
 
             Message::UpdateComplete(library) => {
@@ -1528,10 +1565,16 @@ impl AppModel {
             .find(|p| p.id() == self.view_playlist.unwrap_or(0));
 
         let tracks = active_playlist.unwrap().selected();
+        let take = 10;
 
         let mut column = widget::column().spacing(space_xs);
 
-        for (i, t) in tracks.iter().enumerate().take(10) {
+        for (i, t) in tracks.iter().enumerate().take(take) {
+            let duration = t.metadata.duration.clone().unwrap_or(0.0);
+            let minutes = (duration / 60.0) as u32;
+            let seconds = f32::trunc(duration) as u32 - (minutes * 60);
+            let display_duration = format!("{}:{:02}", minutes, seconds);
+
             let container = widget::container(
                 widget::column()
                     .push(track_info_row(
@@ -1570,10 +1613,7 @@ impl AppModel {
                         fl!("track-count"),
                         t.metadata.track_count.clone().unwrap().to_string(),
                     ))
-                    .push(track_info_row(
-                        fl!("duration"),
-                        t.metadata.title.clone().unwrap().to_string(),
-                    ))
+                    .push(track_info_row(fl!("duration"), display_duration))
                     .push(
                         widget::row()
                             .width(Length::Fill)
@@ -1586,6 +1626,10 @@ impl AppModel {
             }
 
             column = column.push(container);
+        }
+
+        if tracks.len() > take {
+            column = column.push(widget::text("...".to_string()));
         }
 
         column.into()

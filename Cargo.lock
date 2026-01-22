@@ -1483,6 +1483,7 @@ name = "ethereal-waves"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "futures-util",
  "gstreamer",
  "gstreamer-audio",

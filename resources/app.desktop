@@ -2,7 +2,7 @@
 Name=Ethereal Waves
 Comment=Ethereal Waves
 Type=Application
-Icon=com.github.LotusPetal392.ethereal-waves
+Icon=icon
 Exec=ethereal-waves %F
 Terminal=false
 StartupNotify=true

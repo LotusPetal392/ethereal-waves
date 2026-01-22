@@ -1,10 +1,10 @@
 use crate::app::{PlaylistKind, SortBy, SortDirection};
 use crate::fl;
 use crate::library::MediaMetaData;
+use chrono::prelude::*;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Playlist {
@@ -162,6 +162,7 @@ pub struct Track {
     #[serde(skip)]
     pub selected: bool,
     pub metadata: MediaMetaData,
+    pub date_added: String,
 }
 
 impl Track {
@@ -170,6 +171,7 @@ impl Track {
             path: PathBuf::new(),
             selected: false,
             metadata: MediaMetaData::new(),
+            date_added: Local::now().to_string(),
         }
     }
 }
