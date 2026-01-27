@@ -2119,6 +2119,7 @@ impl AppModel {
                         self.player.play();
                     }
                 }
+                self.update_now_playing();
                 return;
             }
             _ => {
@@ -2143,12 +2144,23 @@ impl AppModel {
                             self.player.play();
                         }
                     }
+                    self.update_now_playing();
                     return;
                 }
             }
         }
 
         self.update_now_playing();
+
+        // Load and play the new track
+        if let Some(session) = &self.playback_session {
+            let track = &session.order[session.index];
+            if let Ok(url) = Url::from_file_path(&track.path) {
+                self.player.stop();
+                self.player.load(url.as_str());
+                self.player.play();
+            }
+        }
     }
 
     fn play(&mut self) {
