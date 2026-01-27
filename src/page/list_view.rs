@@ -211,7 +211,7 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
 
         let row_button = widget::button::custom(row_element)
             .class(button_style(track.1.selected, false))
-            .on_press_down(Message::ChangeTrack(id.clone()))
+            .on_press_down(Message::ChangeTrack(id, track.0))
             .padding(0);
 
         rows =

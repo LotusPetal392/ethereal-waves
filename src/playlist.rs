@@ -3,6 +3,8 @@ use crate::fl;
 use crate::library::MediaMetaData;
 use chrono::prelude::*;
 use rand::Rng;
+use rand::rng;
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
 
@@ -144,6 +146,11 @@ impl Playlist {
             }
         }
     }
+
+    pub fn shuffle(&mut self) {
+        let mut rng = rng();
+        self.tracks.shuffle(&mut rng);
+    }
 }
 
 impl fmt::Debug for Playlist {
@@ -157,12 +164,24 @@ impl fmt::Debug for Playlist {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
 pub struct Track {
     pub path: PathBuf,
     #[serde(skip)]
     pub selected: bool,
     pub metadata: MediaMetaData,
     pub date_added: String,
+}
+
+impl Default for Track {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            selected: false,
+            metadata: MediaMetaData::new(),
+            date_added: Local::now().to_string(),
+        }
+    }
 }
 
 impl Track {

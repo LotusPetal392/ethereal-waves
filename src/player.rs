@@ -35,19 +35,31 @@ impl Player {
         self.playbin.set_property("uri", &uri);
     }
 
-    pub fn play(&self) -> Result<(), gst::StateChangeError> {
-        self.pipeline.set_state(gst::State::Playing)?;
-        Ok(())
+    pub fn play(&self) {
+        match self.pipeline.set_state(gst::State::Playing) {
+            Ok(_) => {}
+            Err(error) => {
+                panic!("Failed to play: {:?}", error);
+            }
+        }
     }
 
-    pub fn pause(&self) -> Result<(), gst::StateChangeError> {
-        self.pipeline.set_state(gst::State::Paused)?;
-        Ok(())
+    pub fn pause(&self) {
+        match self.pipeline.set_state(gst::State::Paused) {
+            Ok(_) => {}
+            Err(error) => {
+                panic!("Failed to pause: {:?}", error);
+            }
+        }
     }
 
-    pub fn stop(&self) -> Result<(), gst::StateChangeError> {
-        self.pipeline.set_state(gst::State::Null)?;
-        Ok(())
+    pub fn stop(&self) {
+        match self.pipeline.set_state(gst::State::Null) {
+            Ok(_) => {}
+            Err(error) => {
+                panic!("Failed to stop: {:?}", error);
+            }
+        }
     }
 
     pub fn get_current_state(&self) -> &State {

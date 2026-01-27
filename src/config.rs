@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::app::{AppModel, SortBy, SortDirection};
+use crate::app::{AppModel, RepeatMode, SortBy, SortDirection};
 use cosmic::{
     Application,
     cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry},
@@ -75,6 +75,9 @@ impl Default for Config {
 pub struct State {
     pub muted: bool,
     pub playlist_nav_order: Vec<u32>,
+    pub repeat: bool,
+    pub repeat_mode: RepeatMode,
+    pub shuffle: bool,
     pub size_multiplier: f32,
     pub sort_by: SortBy,
     pub sort_direction: SortDirection,
@@ -88,6 +91,9 @@ impl Default for State {
         Self {
             muted: false,
             playlist_nav_order: Vec::new(),
+            repeat: false,
+            repeat_mode: RepeatMode::All,
+            shuffle: false,
             size_multiplier: 8.0,
             sort_by: SortBy::Artist,
             sort_direction: SortDirection::Ascending,

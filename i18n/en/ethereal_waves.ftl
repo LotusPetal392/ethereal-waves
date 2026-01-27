@@ -34,6 +34,11 @@ remove-selected-from-playlist = Remove Selected Tracks From Playlist
 remove = Remove
 tracks-from = Tracks From
 track-info = Track Info
+shuffle = Shuffle
+repeat = Repeat
+playback = Playback
+repeat-one = Repeat One
+repeat-all = Repeat All
 
 previous = Previous
 play = Play

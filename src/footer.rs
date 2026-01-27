@@ -132,7 +132,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
                 .push(widget::horizontal_space().width(Length::Fill))
                 .push(widget::tooltip(
                     widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
-                        .on_press(Message::Previous)
+                        .on_press(Message::PreviousPressed)
                         .padding(space_xs)
                         .icon_size(space_m),
                     widget::text(fl!("previous")),
@@ -140,7 +140,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
                 ))
                 .push(widget::tooltip(
                     widget::button::icon(widget::icon::from_name(play_icon))
-                        .on_press(Message::TogglePlaying)
+                        .on_press(Message::PlayPressed)
                         .padding(space_xs)
                         .icon_size(space_l),
                     widget::text(fl!("play")),
@@ -148,7 +148,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
                 ))
                 .push(widget::tooltip(
                     widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
-                        .on_press(Message::Next)
+                        .on_press(Message::NextPressed)
                         .padding(space_xs)
                         .icon_size(space_m),
                     widget::text(fl!("next")),
@@ -172,15 +172,18 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
     let other_controls_column = widget::column().width(Length::FillPortion(1)).push(
         widget::row()
             .align_y(Alignment::Center)
+            .spacing(space_xxs)
+            .push(widget::horizontal_space().width(Length::FillPortion(1)))
             .push(
                 widget::button::icon(widget::icon::from_name(volume_icon))
                     .on_press(Message::ToggleMute),
             )
-            .push(widget::slider(
-                0..=100,
-                app.state.volume,
-                Message::SetVolume,
-            )),
+            .push(
+                widget::column().push(
+                    widget::slider(0..=100, app.state.volume, Message::SetVolume)
+                        .width(Length::Fixed(150.0)),
+                ),
+            ),
     );
 
     let control_row = widget::row()

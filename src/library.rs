@@ -29,7 +29,7 @@ impl Library {
         Ok(())
     }
 
-    pub fn from_id(&self, id: String) -> Option<(&PathBuf, &MediaMetaData)> {
+    pub fn from_id(&self, id: &String) -> Option<(&PathBuf, &MediaMetaData)> {
         if let Some(entry) = self.media.iter().find(|(_, v)| v.id == Some(id.clone())) {
             return Some(entry);
         }

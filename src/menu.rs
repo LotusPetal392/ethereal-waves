@@ -1,9 +1,21 @@
-use crate::app::{AppModel, MenuAction, Message};
+use crate::app::{AppModel, MenuAction, Message, RepeatMode};
 use crate::fl;
-use cosmic::{Apply, Element, widget::menu};
+use cosmic::{Apply, Element, iced::Length, widget::menu};
 
 pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
     let has_playlist = app.view_playlist.is_some();
+
+    let repeat_one = if app.state.repeat_mode == RepeatMode::One {
+        true
+    } else {
+        false
+    };
+
+    let repeat_all = if app.state.repeat_mode == RepeatMode::All {
+        true
+    } else {
+        false
+    };
 
     let selected_playlist = app
         .playlists
@@ -139,6 +151,39 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
             ),
         ),
         menu::Tree::with_children(
+            menu::root(fl!("playback")).apply(Element::from),
+            menu::items(
+                &app.key_binds,
+                vec![
+                    menu::Item::CheckBox(
+                        fl!("shuffle"),
+                        None,
+                        app.state.shuffle,
+                        MenuAction::ToggleShuffle,
+                    ),
+                    menu::Item::CheckBox(
+                        fl!("repeat"),
+                        None,
+                        app.state.repeat,
+                        MenuAction::ToggleRepeat,
+                    ),
+                    menu::Item::Divider,
+                    menu::Item::CheckBox(
+                        fl!("repeat-one"),
+                        None,
+                        repeat_one,
+                        MenuAction::ToggleRepeatMode,
+                    ),
+                    menu::Item::CheckBox(
+                        fl!("repeat-all"),
+                        None,
+                        repeat_all,
+                        MenuAction::ToggleRepeatMode,
+                    ),
+                ],
+            ),
+        ),
+        menu::Tree::with_children(
             menu::root(fl!("view")).apply(Element::from),
             menu::items(
                 &app.key_binds,
@@ -156,5 +201,6 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
     .item_width(menu::ItemWidth::Uniform(250))
     .item_height(menu::ItemHeight::Dynamic(40))
     .spacing(1.0)
+    .width(Length::Fill)
     .into()
 }
