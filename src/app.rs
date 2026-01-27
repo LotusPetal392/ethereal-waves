@@ -702,12 +702,34 @@ impl cosmic::Application for AppModel {
                             self.update_now_playing();
                             self.player.play();
                         } else {
-                            // Same playlist, just update the index and play
+                            // Same playlist - need to find the clicked track in the session order
                             self.stop();
 
                             if let Some(session) = &mut self.playback_session {
-                                session.index = index;
-                                let track = &session.order[index];
+                                let playlist = self
+                                    .playlists
+                                    .iter()
+                                    .find(|p| p.id() == self.view_playlist.unwrap_or(0))
+                                    .unwrap();
+
+                                let clicked_track = &playlist.tracks()[index];
+
+                                // Find this track in the session's order
+                                let session_index = session
+                                    .order
+                                    .iter()
+                                    .position(|t| {
+                                        t.metadata.id.clone().unwrap_or("".into())
+                                            == clicked_track
+                                                .metadata
+                                                .id
+                                                .clone()
+                                                .unwrap_or("".into())
+                                    })
+                                    .unwrap_or(0);
+
+                                session.index = session_index;
+                                let track = &session.order[session.index];
 
                                 if let Ok(url) = Url::from_file_path(&track.path) {
                                     self.player.load(url.as_str());

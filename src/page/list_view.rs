@@ -60,6 +60,7 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
 
     let chars: f32 = tracks_len.to_string().len() as f32;
     let number_column_width: f32 = chars * 11.0;
+    let icon_column_width: f32 = 24.0; // Width for the play icon column
 
     let sort_icon: String = match app.state.sort_direction {
         SortDirection::Ascending => "pan-down-symbolic".into(),
@@ -72,12 +73,20 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
         Alignment::Center
     };
 
+    // Check if this playlist is the one currently playing
+    let is_playing_playlist = app
+        .playback_session
+        .as_ref()
+        .map(|session| session.playlist_id == active_playlist.id())
+        .unwrap_or(false);
+
     let mut content = widget::column();
 
     content = content.push(
         widget::row()
             .spacing(space_xxs)
             .push(widget::horizontal_space().width(space_xxxs))
+            .push(widget::horizontal_space().width(Length::Fixed(icon_column_width))) // Space for icon column
             .push(
                 widget::text::heading("#")
                     .align_x(Alignment::End)
@@ -157,19 +166,53 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
     for (index, track) in tracks.iter().skip(list_start).take(take).enumerate() {
         let id = track.1.metadata.id.clone().unwrap();
 
-        let row_element = widget::row()
+        // Check if this is the currently playing track by comparing IDs
+        let is_playing_track = is_playing_playlist
+            && app
+                .playback_session
+                .as_ref()
+                .and_then(|session| {
+                    session.order.get(session.index).and_then(|playing_track| {
+                        let playing_id = playing_track.metadata.id.clone()?;
+                        let current_id = track.1.metadata.id.clone()?;
+                        Some(playing_id == current_id)
+                    })
+                })
+                .unwrap_or(false);
+
+        let mut row_element = widget::row()
             .spacing(space_xxs)
-            .height(Length::Fixed(app.list_row_height))
-            .push(
+            .height(Length::Fixed(app.list_row_height));
+
+        // Add play icon column
+        if is_playing_track {
+            row_element = row_element.push(
                 widget::container(
-                    widget::text(count.to_string())
-                        .width(Length::Fixed(number_column_width))
-                        .align_x(Alignment::End)
-                        .align_y(align)
-                        .height(app.list_row_height),
+                    widget::icon::from_name("media-playback-start-symbolic").size(16),
                 )
-                .clip(true),
+                .width(Length::Fixed(icon_column_width))
+                .align_x(Alignment::Center)
+                .align_y(align)
+                .height(app.list_row_height),
+            );
+        } else {
+            row_element = row_element
+                .push(widget::horizontal_space().width(Length::Fixed(icon_column_width)));
+        }
+
+        // Add track number column
+        row_element = row_element.push(
+            widget::container(
+                widget::text(count.to_string())
+                    .width(Length::Fixed(number_column_width))
+                    .align_x(Alignment::End)
+                    .align_y(align)
+                    .height(app.list_row_height),
             )
+            .clip(true),
+        );
+
+        row_element = row_element
             .push(
                 widget::container(
                     widget::text(
