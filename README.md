@@ -1,6 +1,9 @@
 # Ethereal Waves
 
-Ethereal Waves
+A basic music player based on libcosmic
+
+![Ethereal Waves - Dark Mode](https://github.com/LotusPetal392/ethereal-waves/blob/b970a4506b73b681b760d581c70f30d3a7eeed4b/screenshots/Ethereal%20Waves%20-%20Dark%20Mode.png?raw=true)
+![Ethereal Waves - Light Mode](https://github.com/LotusPetal392/ethereal-waves/blob/b970a4506b73b681b760d581c70f30d3a7eeed4b/screenshots/Ethereal%20Waves%20-%20Light%20Mode.png?raw=true)
 
 ## Installation
 

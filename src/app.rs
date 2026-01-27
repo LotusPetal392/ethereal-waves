@@ -61,7 +61,9 @@ use walkdir::WalkDir;
 use xdg::BaseDirectories;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
-const APP_ICON: &[u8] = include_bytes!("../resources/icons/hicolor/scalable/apps/icon.svg");
+const APP_ICON: &[u8] = include_bytes!(
+    "../resources/icons/hicolor/scalable/apps/com.github.LotusPetal392.ethereal-waves.svg"
+);
 
 /// The application model stores app-specific state used to describe its interface and
 /// drive its logic.

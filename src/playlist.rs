@@ -3,8 +3,6 @@ use crate::fl;
 use crate::library::MediaMetaData;
 use chrono::prelude::*;
 use rand::Rng;
-use rand::rng;
-use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::PathBuf};
 
@@ -145,11 +143,6 @@ impl Playlist {
                 self.tracks[i].selected = true;
             }
         }
-    }
-
-    pub fn shuffle(&mut self) {
-        let mut rng = rng();
-        self.tracks.shuffle(&mut rng);
     }
 }
 
