@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0
+
 use crate::app::{AppModel, Message};
 use crate::fl;
 use crate::library::MediaMetaData;

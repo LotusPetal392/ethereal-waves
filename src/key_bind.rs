@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0
+
 use cosmic::{
     iced::keyboard::{Key, key::Named},
     widget::menu::key_bind::{KeyBind, Modifier},

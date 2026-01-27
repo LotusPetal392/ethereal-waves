@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0
+
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;

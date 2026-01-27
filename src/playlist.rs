@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0
+
 use crate::app::{PlaylistKind, SortBy, SortDirection};
 use crate::fl;
 use crate::library::MediaMetaData;

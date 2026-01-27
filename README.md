@@ -1,6 +1,6 @@
 # Ethereal Waves
 
-A basic music player based on libcosmic
+A basic music player based on libcosmic. Still very much a work in progress. Bugs exist and features are still missing.
 
 ![Ethereal Waves - Dark Mode](https://github.com/LotusPetal392/ethereal-waves/blob/b970a4506b73b681b760d581c70f30d3a7eeed4b/screenshots/Ethereal%20Waves%20-%20Dark%20Mode.png?raw=true)
 ![Ethereal Waves - Light Mode](https://github.com/LotusPetal392/ethereal-waves/blob/b970a4506b73b681b760d581c70f30d3a7eeed4b/screenshots/Ethereal%20Waves%20-%20Light%20Mode.png?raw=true)
@@ -11,6 +11,7 @@ A [justfile](./justfile) is included by default for the [casey/just][just] comma
 
 - `just` builds the application with the default `just build-release` recipe
 - `just run` builds and runs the application
+- `just run-dev` builds and runs the application with debug symbols
 - `just install` installs the project into the system
 - `just vendor` creates a vendored tarball
 - `just build-vendored` compiles with vendored dependencies from that tarball

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0
+
 use crate::app::{AppModel, Message, SortBy, SortDirection};
 use crate::fl;
 use crate::playlist::Playlist;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0
+
 use crate::app::{AppModel, MenuAction, Message, RepeatMode};
 use crate::fl;
 use cosmic::{Apply, Element, iced::Length, widget::menu};

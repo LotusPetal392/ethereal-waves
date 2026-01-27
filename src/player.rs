@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0
+
 use gst::State;
 use gst::prelude::*;
 use gstreamer::{self as gst};
