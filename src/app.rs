@@ -1224,6 +1224,39 @@ impl cosmic::Application for AppModel {
             Message::ToggleShuffle => {
                 let shuffle = !self.state.shuffle;
                 state_set!(shuffle, shuffle);
+
+                // If there's an active playback session, recreate it with new shuffle order
+                if let Some(session) = &self.playback_session {
+                    let playlist_id = session.playlist_id;
+                    let current_track_id = session.order[session.index].metadata.id.clone();
+
+                    // Find the playlist
+                    if let Some(playlist) = self.playlists.iter().find(|p| p.id() == playlist_id) {
+                        let mut new_order = playlist.tracks().to_vec();
+
+                        // Apply shuffle if enabled
+                        if shuffle {
+                            new_order.shuffle(&mut rand::rng());
+                        }
+                        // If shuffle is off, new_order is already in original playlist order
+
+                        // Find the current track in the new order
+                        let new_index = new_order
+                            .iter()
+                            .position(|t| {
+                                t.metadata.id.clone().unwrap_or("".into())
+                                    == current_track_id.clone().unwrap_or("".into())
+                            })
+                            .unwrap_or(0);
+
+                        // Update the session with new order
+                        self.playback_session = Some(PlaybackSession {
+                            playlist_id,
+                            order: new_order,
+                            index: new_index,
+                        });
+                    }
+                }
             }
 
             Message::UpdateComplete(library) => {
