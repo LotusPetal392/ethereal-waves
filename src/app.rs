@@ -10,7 +10,7 @@ use crate::menu::menu_bar;
 use crate::page::empty_library;
 use crate::page::list_view;
 use crate::page::loading;
-use crate::player::Player;
+use crate::player::{PlaybackState, Player};
 use crate::playlist::{Playlist, Track};
 use cosmic::iced_widget::scrollable::{self, AbsoluteOffset};
 use cosmic::prelude::*;
@@ -155,11 +155,11 @@ pub enum Message {
     MoveNavDown,
     MoveNavUp,
     NewPlaylist,
-    NextPressed,
+    Next,
     Noop,
     PeriodicLibraryUpdate(HashMap<PathBuf, MediaMetaData>),
-    PlayPressed,
-    PreviousPressed,
+    PlayPause,
+    Previous,
     Quit,
     ReleaseSlider,
     RemoveLibraryPath(String),
@@ -1027,7 +1027,7 @@ impl cosmic::Application for AppModel {
                 state_set!(playlist_nav_order, order);
             }
 
-            Message::NextPressed => {
+            Message::Next => {
                 self.next();
             }
 
@@ -1052,8 +1052,8 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::PlayPressed => match self.player.get_current_state() {
-                gst::State::Null => {
+            Message::PlayPause => match self.player.state {
+                PlaybackState::Stopped => {
                     if let Some(session) = &self.playback_session {
                         let track = &session.order[session.index];
                         if let Ok(url) = Url::from_file_path(&track.path) {
@@ -1062,18 +1062,15 @@ impl cosmic::Application for AppModel {
                     }
                     self.play();
                 }
-                gst::State::Paused => {
-                    println!("Unpause");
+                PlaybackState::Paused => {
                     self.play();
                 }
-                gst::State::Playing => {
-                    println!("Pause");
+                PlaybackState::Playing => {
                     self.pause();
                 }
-                _ => {}
             },
 
-            Message::PreviousPressed => {
+            Message::Previous => {
                 self.prev();
             }
 
@@ -1086,7 +1083,7 @@ impl cosmic::Application for AppModel {
             Message::ReleaseSlider => {
                 // TODO: Don't seek if the player status isn't playing or paused
                 self.dragging_progress_slider = false;
-                match self.player.pipeline.seek_simple(
+                match self.player.playbin.seek_simple(
                     gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
                     gst::ClockTime::from_seconds(self.playback_progress as u64),
                 ) {
@@ -1141,29 +1138,28 @@ impl cosmic::Application for AppModel {
 
             // Handles GStreamer messages
             Message::Tick => {
-                let bus = self.player.pipeline.bus().unwrap();
+                let bus = self.player.playbin.bus().unwrap();
                 while let Some(msg) = bus.pop() {
                     use gst::MessageView;
                     match msg.view() {
-                        MessageView::StateChanged(s) => {
-                            if s.src().map(|s| *s == self.player.pipeline).unwrap_or(false) {
-                                self.player.set_current_state(s.current());
-                            }
-                        }
+                        // MessageView::StateChanged(s) => {
+                        //     if s.src().map(|s| *s == self.player.playbin).unwrap_or(false) {
+                        //         println!("Current state: {:?}", s.current());
+                        //     }
+                        // }
                         MessageView::Eos(..) => {
-                            println!("End of stream.");
-                            return self.update(Message::NextPressed);
+                            self.next();
                         }
                         MessageView::Error(err) => {
                             eprintln!("Error: {}", err.error());
-                            return self.update(Message::NextPressed);
+                            self.next();
                         }
                         _ => (),
                     }
                 }
 
                 if !self.dragging_progress_slider {
-                    if let Some(pos) = self.player.pipeline.query_position::<gst::ClockTime>() {
+                    if let Some(pos) = self.player.playbin.query_position::<gst::ClockTime>() {
                         self.playback_progress = pos.mseconds() as f32 / 1000.0;
                     }
                 }
@@ -2087,8 +2083,6 @@ impl AppModel {
     }
 
     fn next(&mut self) {
-        println!("Next");
-
         if self.playback_session.is_none() {
             return;
         }
@@ -2136,8 +2130,6 @@ impl AppModel {
     }
 
     fn prev(&mut self) {
-        println!("Previous");
-
         if self.playback_session.is_none() {
             return;
         }
@@ -2197,8 +2189,6 @@ impl AppModel {
     }
 
     fn play(&mut self) {
-        println!("Play");
-
         if let None = self.playback_session {
             let session = self.play_track_from_view_playlist(0);
             self.playback_session = Some(session);
@@ -2216,11 +2206,11 @@ impl AppModel {
         self.player.play();
     }
 
-    fn pause(&self) {
+    fn pause(&mut self) {
         self.player.pause();
     }
 
-    fn stop(&self) {
+    fn stop(&mut self) {
         self.player.stop();
     }
 

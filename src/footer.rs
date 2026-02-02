@@ -3,6 +3,7 @@
 use crate::app::{AppModel, Message};
 use crate::fl;
 use crate::library::MediaMetaData;
+use crate::player::PlaybackState;
 use cosmic::widget::tooltip::Position;
 use cosmic::{
     Element, cosmic_theme,
@@ -12,8 +13,6 @@ use cosmic::{
     },
     theme, widget,
 };
-use gst::State;
-use gstreamer as gst;
 
 pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
     let cosmic_theme::Spacing {
@@ -97,9 +96,9 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
             .push(now_playing_text),
     );
 
-    let play_icon = match app.player.get_current_state() {
-        State::Null => "media-playback-start-symbolic",
-        State::Paused => "media-playback-start-symbolic",
+    let play_icon = match app.player.state {
+        PlaybackState::Stopped => "media-playback-start-symbolic",
+        PlaybackState::Paused => "media-playback-start-symbolic",
         _ => "media-playback-pause-symbolic",
     };
 
@@ -134,7 +133,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
                 .push(widget::horizontal_space().width(Length::Fill))
                 .push(widget::tooltip(
                     widget::button::icon(widget::icon::from_name("media-skip-backward-symbolic"))
-                        .on_press(Message::PreviousPressed)
+                        .on_press(Message::Previous)
                         .padding(space_xs)
                         .icon_size(space_m),
                     widget::text(fl!("previous")),
@@ -142,7 +141,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
                 ))
                 .push(widget::tooltip(
                     widget::button::icon(widget::icon::from_name(play_icon))
-                        .on_press(Message::PlayPressed)
+                        .on_press(Message::PlayPause)
                         .padding(space_xs)
                         .icon_size(space_l),
                     widget::text(fl!("play")),
@@ -150,7 +149,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
                 ))
                 .push(widget::tooltip(
                     widget::button::icon(widget::icon::from_name("media-skip-forward-symbolic"))
-                        .on_press(Message::NextPressed)
+                        .on_press(Message::Next)
                         .padding(space_xs)
                         .icon_size(space_m),
                     widget::text(fl!("next")),
