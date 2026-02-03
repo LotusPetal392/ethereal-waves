@@ -7,6 +7,7 @@ mod i18n;
 mod key_bind;
 mod library;
 mod menu;
+mod mpris;
 mod page;
 mod player;
 mod playlist;

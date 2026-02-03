@@ -7,6 +7,7 @@ use crate::key_bind::key_binds;
 use crate::library::Library;
 use crate::library::MediaMetaData;
 use crate::menu::menu_bar;
+use crate::mpris::{MediaPlayer2, MediaPlayer2Player, MprisCommand};
 use crate::page::empty_library;
 use crate::page::list_view;
 use crate::page::loading;
@@ -54,6 +55,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use url::Url;
 use urlencoding::decode;
@@ -133,6 +135,8 @@ pub struct AppModel {
 
     search_id: widget::Id,
     pub search_term: Option<String>,
+
+    mpris_rx: UnboundedReceiver<MprisCommand>,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -233,6 +237,35 @@ impl cosmic::Application for AppModel {
             .links([(fl!("repository"), REPOSITORY)])
             .license(env!("CARGO_PKG_LICENSE"));
 
+        // Initialize MPRIS
+        let (mpris_tx, mpris_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let connection = zbus::Connection::session().await.unwrap();
+
+            connection
+                .object_server()
+                .at("/org/mpris/MediaPlayer2", MediaPlayer2)
+                .await
+                .unwrap();
+
+            connection
+                .object_server()
+                .at(
+                    "/org/mpris/MediaPlayer2",
+                    MediaPlayer2Player { tx: mpris_tx },
+                )
+                .await
+                .unwrap();
+
+            connection
+                .request_name("org.mpris.MediaPlayer2.ethereal-waves")
+                .await
+                .unwrap();
+
+            // Keep alive
+            futures::future::pending::<()>().await;
+        });
+
         // Construct the app model with the runtime's core.
         let mut app = AppModel {
             core,
@@ -285,6 +318,7 @@ impl cosmic::Application for AppModel {
             playback_session: None,
             search_id: widget::Id::new("Text Search"),
             search_term: None,
+            mpris_rx,
         };
 
         // Create a startup command that sets the window title.
@@ -1136,8 +1170,8 @@ impl cosmic::Application for AppModel {
                 self.playback_progress = time;
             }
 
-            // Handles GStreamer messages
             Message::Tick => {
+                // Handle GStreamer messages
                 let bus = self.player.playbin.bus().unwrap();
                 while let Some(msg) = bus.pop() {
                     use gst::MessageView;
@@ -1161,6 +1195,19 @@ impl cosmic::Application for AppModel {
                 if !self.dragging_progress_slider {
                     if let Some(pos) = self.player.playbin.query_position::<gst::ClockTime>() {
                         self.playback_progress = pos.mseconds() as f32 / 1000.0;
+                    }
+                }
+
+                // Handle MPRIS Commands
+                while let Ok(cmd) = self.mpris_rx.try_recv() {
+                    println!("mpris message: {:?}", cmd);
+                    match cmd {
+                        MprisCommand::Play => self.play(),
+                        MprisCommand::Pause => self.pause(),
+                        MprisCommand::Stop => self.stop(),
+                        MprisCommand::Next => self.next(),
+                        MprisCommand::Previous => self.prev(),
+                        _ => {}
                     }
                 }
             }
