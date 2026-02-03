@@ -5,7 +5,7 @@ use gstreamer::{self as gst};
 
 pub struct Player {
     pub playbin: gst::Element,
-    pub state: PlaybackState,
+    pub playback_status: PlaybackStatus,
 }
 
 impl Player {
@@ -22,7 +22,7 @@ impl Player {
 
         Self {
             playbin,
-            state: PlaybackState::Stopped,
+            playback_status: PlaybackStatus::Stopped,
         }
     }
 
@@ -32,7 +32,7 @@ impl Player {
 
     pub fn play(&mut self) {
         match self.playbin.set_state(gst::State::Playing) {
-            Ok(_) => self.state = PlaybackState::Playing,
+            Ok(_) => self.playback_status = PlaybackStatus::Playing,
             Err(error) => {
                 panic!("Failed to play: {:?}", error);
             }
@@ -41,7 +41,7 @@ impl Player {
 
     pub fn pause(&mut self) {
         match self.playbin.set_state(gst::State::Paused) {
-            Ok(_) => self.state = PlaybackState::Paused,
+            Ok(_) => self.playback_status = PlaybackStatus::Paused,
             Err(error) => {
                 panic!("Failed to pause: {:?}", error);
             }
@@ -50,7 +50,7 @@ impl Player {
 
     pub fn stop(&mut self) {
         match self.playbin.set_state(gst::State::Null) {
-            Ok(_) => self.state = PlaybackState::Stopped,
+            Ok(_) => self.playback_status = PlaybackStatus::Stopped,
             Err(error) => {
                 panic!("Failed to stop: {:?}", error);
             }
@@ -62,7 +62,7 @@ impl Player {
     }
 }
 
-pub enum PlaybackState {
+pub enum PlaybackStatus {
     Stopped,
     Playing,
     Paused,

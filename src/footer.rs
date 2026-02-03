@@ -3,7 +3,7 @@
 use crate::app::{AppModel, Message};
 use crate::fl;
 use crate::library::MediaMetaData;
-use crate::player::PlaybackState;
+use crate::player::PlaybackStatus;
 use cosmic::widget::tooltip::Position;
 use cosmic::{
     Element, cosmic_theme,
@@ -96,9 +96,9 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
             .push(now_playing_text),
     );
 
-    let play_icon = match app.player.state {
-        PlaybackState::Stopped => "media-playback-start-symbolic",
-        PlaybackState::Paused => "media-playback-start-symbolic",
+    let play_icon = match app.player.playback_status {
+        PlaybackStatus::Stopped => "media-playback-start-symbolic",
+        PlaybackStatus::Paused => "media-playback-start-symbolic",
         _ => "media-playback-pause-symbolic",
     };
 

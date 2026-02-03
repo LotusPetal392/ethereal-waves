@@ -11,7 +11,7 @@ use crate::mpris::{MediaPlayer2, MediaPlayer2Player, MprisCommand};
 use crate::page::empty_library;
 use crate::page::list_view;
 use crate::page::loading;
-use crate::player::{PlaybackState, Player};
+use crate::player::{PlaybackStatus, Player};
 use crate::playlist::{Playlist, Track};
 use cosmic::iced_widget::scrollable::{self, AbsoluteOffset};
 use cosmic::prelude::*;
@@ -570,10 +570,8 @@ impl cosmic::Application for AppModel {
             }),
         ];
 
-        if self.now_playing.is_some() {
-            subscriptions
-                .push(iced::time::every(Duration::from_millis(100)).map(|_| Message::Tick));
-        }
+        // Tick
+        subscriptions.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::Tick));
 
         Subscription::batch(subscriptions)
     }
@@ -1086,8 +1084,8 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::PlayPause => match self.player.state {
-                PlaybackState::Stopped => {
+            Message::PlayPause => match self.player.playback_status {
+                PlaybackStatus::Stopped => {
                     if let Some(session) = &self.playback_session {
                         let track = &session.order[session.index];
                         if let Ok(url) = Url::from_file_path(&track.path) {
@@ -1096,10 +1094,10 @@ impl cosmic::Application for AppModel {
                     }
                     self.play();
                 }
-                PlaybackState::Paused => {
+                PlaybackStatus::Paused => {
                     self.play();
                 }
-                PlaybackState::Playing => {
+                PlaybackStatus::Playing => {
                     self.pause();
                 }
             },
@@ -1204,6 +1202,7 @@ impl cosmic::Application for AppModel {
                     match cmd {
                         MprisCommand::Play => self.play(),
                         MprisCommand::Pause => self.pause(),
+                        MprisCommand::PlayPause => self.play_pause(),
                         MprisCommand::Stop => self.stop(),
                         MprisCommand::Next => self.next(),
                         MprisCommand::Previous => self.prev(),
@@ -2232,6 +2231,14 @@ impl AppModel {
                 self.player.load(url.as_str());
                 self.player.play();
             }
+        }
+    }
+
+    fn play_pause(&mut self) {
+        match self.player.playback_status {
+            PlaybackStatus::Stopped => self.play(),
+            PlaybackStatus::Paused => self.play(),
+            PlaybackStatus::Playing => self.pause(),
         }
     }
 
