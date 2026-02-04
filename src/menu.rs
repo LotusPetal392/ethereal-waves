@@ -25,7 +25,8 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
         .find(|p| p.id() == app.view_playlist.unwrap())
         .unwrap();
 
-    let mut playlists_list = Vec::new();
+    let mut selected_playlist_list = Vec::new();
+    let mut now_playing_playlist_list = Vec::new();
 
     let selected_count: usize = if app.view_playlist.is_some() {
         app.playlists
@@ -42,11 +43,18 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
     app.state.playlist_nav_order.iter().for_each(|p| {
         let playlist = app.playlists.iter().find(|playlist| playlist.id() == *p);
         if playlist.is_some() {
-            playlists_list.push(menu::Item::Button(
+            selected_playlist_list.push(menu::Item::Button(
                 playlist.unwrap().name().to_string(),
                 None,
-                MenuAction::AddToPlaylist(playlist.unwrap().id()),
+                MenuAction::AddSelectedToPlaylist(playlist.unwrap().id()),
             ));
+            if app.now_playing.is_some() {
+                now_playing_playlist_list.push(menu::Item::Button(
+                    playlist.unwrap().name().to_string(),
+                    None,
+                    MenuAction::AddNowPlayingToPlaylist(playlist.unwrap().id()),
+                ));
+            }
         }
     });
     // Add unordered playlists
@@ -54,11 +62,18 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
         .iter()
         .filter(|p| !p.is_library() && !app.state.playlist_nav_order.contains(&p.id()))
         .for_each(|p| {
-            playlists_list.push(menu::Item::Button(
+            selected_playlist_list.push(menu::Item::Button(
                 p.name().to_string(),
                 None,
-                MenuAction::AddToPlaylist(p.id()),
+                MenuAction::AddSelectedToPlaylist(p.id()),
             ));
+            if app.now_playing.is_some() {
+                now_playing_playlist_list.push(menu::Item::Button(
+                    p.name().to_string(),
+                    None,
+                    MenuAction::AddNowPlayingToPlaylist(p.id()),
+                ));
+            }
         });
 
     menu::bar(vec![
@@ -124,7 +139,7 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
                         )
                     },
                     menu::Item::Divider,
-                    menu::Item::Folder(fl!("add-selected-to"), playlists_list),
+                    menu::Item::Folder(fl!("add-selected-to"), selected_playlist_list),
                     if has_playlist && !selected_playlist.is_library() {
                         menu::Item::Button(
                             fl!("remove-selected"),
@@ -138,6 +153,8 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
                             MenuAction::RemoveSelectedFromPlaylist,
                         )
                     },
+                    menu::Item::Divider,
+                    menu::Item::Folder(fl!("add-now-playing-to"), now_playing_playlist_list),
                     menu::Item::Divider,
                     if has_playlist {
                         menu::Item::Button(fl!("move-up"), None, MenuAction::MoveNavUp)

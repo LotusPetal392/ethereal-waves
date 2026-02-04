@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0
 
+use crate::app::PlaybackStatus;
 use crate::app::{AppModel, Message};
 use crate::fl;
 use crate::library::MediaMetaData;
-use crate::player::PlaybackStatus;
 use cosmic::widget::tooltip::Position;
 use cosmic::{
     Element, cosmic_theme,
@@ -96,7 +96,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
             .push(now_playing_text),
     );
 
-    let play_icon = match app.player.playback_status {
+    let play_icon = match app.playback_status {
         PlaybackStatus::Stopped => "media-playback-start-symbolic",
         PlaybackStatus::Paused => "media-playback-start-symbolic",
         _ => "media-playback-pause-symbolic",

@@ -39,6 +39,7 @@ repeat = Repeat
 playback = Playback
 repeat-one = Repeat One
 repeat-all = Repeat All
+add-now-playing-to = Add Now Playing to
 
 previous = Previous
 play = Play
@@ -52,6 +53,8 @@ playlist-name = Playlist name
 create = Create
 delete = Delete
 delete-warning = This action cannot be undone
+by = by
+from = from
 
 # Settings
 match-desktop = Match Desktop

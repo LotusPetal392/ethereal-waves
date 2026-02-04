@@ -1,8 +1,25 @@
+// SPDX-License-Identifier: GPL-3.0
+
+use crate::app::PlaybackStatus;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::interface;
 
 pub struct MediaPlayer2Player {
     pub tx: UnboundedSender<MprisCommand>,
+    pub playback_status: Arc<Mutex<PlaybackStatus>>,
+}
+
+impl MediaPlayer2Player {
+    pub fn new(
+        tx: UnboundedSender<MprisCommand>,
+        playback_status: Arc<Mutex<PlaybackStatus>>,
+    ) -> Self {
+        Self {
+            tx,
+            playback_status,
+        }
+    }
 }
 
 #[interface(name = "org.mpris.MediaPlayer2.Player")]
@@ -54,6 +71,11 @@ impl MediaPlayer2Player {
     #[zbus(property)]
     fn can_go_previous(&self) -> bool {
         true
+    }
+
+    #[zbus(property)]
+    fn playback_status(&self) -> &str {
+        self.playback_status.lock().unwrap().as_str()
     }
 }
 

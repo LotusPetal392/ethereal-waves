@@ -11,7 +11,7 @@ use crate::mpris::{MediaPlayer2, MediaPlayer2Player, MprisCommand};
 use crate::page::empty_library;
 use crate::page::list_view;
 use crate::page::loading;
-use crate::player::{PlaybackStatus, Player};
+use crate::player::Player;
 use crate::playlist::{Playlist, Track};
 use cosmic::iced_widget::scrollable::{self, AbsoluteOffset};
 use cosmic::prelude::*;
@@ -52,7 +52,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -137,13 +137,15 @@ pub struct AppModel {
     pub search_term: Option<String>,
 
     mpris_rx: UnboundedReceiver<MprisCommand>,
+    pub playback_status: PlaybackStatus,
 }
 
 /// Messages emitted by the application and its widgets.
 #[derive(Debug, Clone)]
 pub enum Message {
     AddLibraryDialog,
-    AddToPlaylist(u32),
+    AddSelectedToPlaylist(u32),
+    AddNowPlayingToPlaylist(u32),
     AppTheme(AppTheme),
     ChangeTrack(String, usize),
     DeletePlaylist,
@@ -239,6 +241,8 @@ impl cosmic::Application for AppModel {
 
         // Initialize MPRIS
         let (mpris_tx, mpris_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (conn_tx, conn_rx) = std::sync::mpsc::sync_channel(1);
+
         tokio::spawn(async move {
             let connection = zbus::Connection::session().await.unwrap();
 
@@ -252,7 +256,10 @@ impl cosmic::Application for AppModel {
                 .object_server()
                 .at(
                     "/org/mpris/MediaPlayer2",
-                    MediaPlayer2Player { tx: mpris_tx },
+                    MediaPlayer2Player {
+                        tx: mpris_tx,
+                        playback_status: Arc::new(Mutex::new(PlaybackStatus::Stopped)),
+                    },
                 )
                 .await
                 .unwrap();
@@ -261,6 +268,9 @@ impl cosmic::Application for AppModel {
                 .request_name("org.mpris.MediaPlayer2.ethereal-waves")
                 .await
                 .unwrap();
+
+            // Send clone back to the app
+            let _ = conn_tx.send(connection.clone());
 
             // Keep alive
             futures::future::pending::<()>().await;
@@ -319,6 +329,7 @@ impl cosmic::Application for AppModel {
             search_id: widget::Id::new("Text Search"),
             search_term: None,
             mpris_rx,
+            playback_status: PlaybackStatus::Stopped,
         };
 
         // Create a startup command that sets the window title.
@@ -508,7 +519,7 @@ impl cosmic::Application for AppModel {
                 dialog
             }
 
-            DialogPage::DeleteFromPlaylist => {
+            DialogPage::DeleteSelectedFromPlaylist => {
                 let view_playlist = self
                     .playlists
                     .iter()
@@ -664,7 +675,7 @@ impl cosmic::Application for AppModel {
                 return self.update_config();
             }
 
-            Message::AddToPlaylist(destination_id) => {
+            Message::AddSelectedToPlaylist(destination_id) => {
                 let source_id = self.view_playlist.unwrap();
 
                 let source_index = self
@@ -695,6 +706,28 @@ impl cosmic::Application for AppModel {
                     let mut track = track.clone();
                     track.selected = false;
                     destination.push(track);
+                }
+
+                let _ = self.save_playlists(Some(destination_id));
+            }
+
+            Message::AddNowPlayingToPlaylist(destination_id) => {
+                let destination = self
+                    .playlists
+                    .iter_mut()
+                    .find(|p| p.id() == destination_id)
+                    .unwrap();
+
+                if let Some(now_playing) = self.now_playing.clone() {
+                    let now_playing_data = self
+                        .library
+                        .from_id(&now_playing.id.unwrap_or("".to_string()))
+                        .unwrap();
+                    destination.push(Track {
+                        path: now_playing_data.0.clone(),
+                        metadata: now_playing_data.1.clone(),
+                        ..Default::default()
+                    });
                 }
 
                 let _ = self.save_playlists(Some(destination_id));
@@ -735,6 +768,7 @@ impl cosmic::Application for AppModel {
                             self.playback_session = Some(session);
                             self.update_now_playing();
                             self.player.play();
+                            self.playback_status = PlaybackStatus::Playing;
                         } else {
                             // Same playlist - need to find the clicked track in the session order
                             self.stop();
@@ -772,6 +806,7 @@ impl cosmic::Application for AppModel {
 
                             self.update_now_playing();
                             self.player.play();
+                            self.playback_status = PlaybackStatus::Playing;
                         }
                     }
                 }
@@ -828,7 +863,7 @@ impl cosmic::Application for AppModel {
                             let _ = self.delete_playlist(id);
                         }
 
-                        DialogPage::DeleteFromPlaylist => {
+                        DialogPage::DeleteSelectedFromPlaylist => {
                             if let Some(id) = self.view_playlist {
                                 if let Some(p) = self.playlists.iter_mut().find(|p| p.id() == id) {
                                     p.remove_selected();
@@ -871,7 +906,7 @@ impl cosmic::Application for AppModel {
                             }
                         }
                         DialogPage::DeletePlaylist(_) => {}
-                        DialogPage::DeleteFromPlaylist => {}
+                        DialogPage::DeleteSelectedFromPlaylist => {}
                     }
 
                     if key == Key::Named(Named::Enter) {
@@ -1084,7 +1119,7 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::PlayPause => match self.player.playback_status {
+            Message::PlayPause => match self.playback_status {
                 PlaybackStatus::Stopped => {
                     if let Some(session) = &self.playback_session {
                         let track = &session.order[session.index];
@@ -1093,12 +1128,15 @@ impl cosmic::Application for AppModel {
                         }
                     }
                     self.play();
+                    self.playback_status = PlaybackStatus::Playing;
                 }
                 PlaybackStatus::Paused => {
                     self.play();
+                    self.playback_status = PlaybackStatus::Playing;
                 }
                 PlaybackStatus::Playing => {
                     self.pause();
+                    self.playback_status = PlaybackStatus::Paused;
                 }
             },
 
@@ -1109,6 +1147,7 @@ impl cosmic::Application for AppModel {
             Message::Quit => {
                 print!("Quit message sent");
                 self.player.stop();
+                self.playback_status = PlaybackStatus::Stopped;
                 process::exit(0);
             }
 
@@ -1131,7 +1170,8 @@ impl cosmic::Application for AppModel {
             }
 
             Message::RemoveSelectedFromPlaylist => {
-                self.dialog_pages.push_back(DialogPage::DeleteFromPlaylist);
+                self.dialog_pages
+                    .push_back(DialogPage::DeleteSelectedFromPlaylist);
             }
 
             Message::SearchActivate => {
@@ -1345,7 +1385,7 @@ impl cosmic::Application for AppModel {
                         .update_front(DialogPage::DeletePlaylist(id));
                 }
 
-                DialogPage::DeleteFromPlaylist => {}
+                DialogPage::DeleteSelectedFromPlaylist => {}
             },
 
             Message::UpdateLibrary => {
@@ -2143,6 +2183,7 @@ impl AppModel {
                         self.player.stop();
                         self.player.load(url.as_str());
                         self.player.play();
+                        self.playback_status = PlaybackStatus::Playing;
                     }
                 }
                 return;
@@ -2157,12 +2198,11 @@ impl AppModel {
                 } else {
                     // End of playlist and not repeating
                     self.player.stop();
+                    self.playback_status = PlaybackStatus::Stopped;
                     return;
                 }
             }
         }
-
-        self.update_now_playing();
 
         // Load and play the new track
         if let Some(session) = &self.playback_session {
@@ -2171,8 +2211,11 @@ impl AppModel {
                 self.player.stop();
                 self.player.load(url.as_str());
                 self.player.play();
+                self.playback_status = PlaybackStatus::Playing;
             }
         }
+
+        self.update_now_playing();
     }
 
     fn prev(&mut self) {
@@ -2188,6 +2231,7 @@ impl AppModel {
                         self.player.stop();
                         self.player.load(url.as_str());
                         self.player.play();
+                        self.playback_status = PlaybackStatus::Playing;
                     }
                 }
                 self.update_now_playing();
@@ -2213,6 +2257,7 @@ impl AppModel {
                             self.player.stop();
                             self.player.load(url.as_str());
                             self.player.play();
+                            self.playback_status = PlaybackStatus::Playing;
                         }
                     }
                     self.update_now_playing();
@@ -2230,12 +2275,13 @@ impl AppModel {
                 self.player.stop();
                 self.player.load(url.as_str());
                 self.player.play();
+                self.playback_status = PlaybackStatus::Playing;
             }
         }
     }
 
     fn play_pause(&mut self) {
-        match self.player.playback_status {
+        match self.playback_status {
             PlaybackStatus::Stopped => self.play(),
             PlaybackStatus::Paused => self.play(),
             PlaybackStatus::Playing => self.pause(),
@@ -2258,14 +2304,17 @@ impl AppModel {
         }
 
         self.player.play();
+        self.playback_status = PlaybackStatus::Playing;
     }
 
     fn pause(&mut self) {
         self.player.pause();
+        self.playback_status = PlaybackStatus::Paused;
     }
 
     fn stop(&mut self) {
         self.player.stop();
+        self.playback_status = PlaybackStatus::Stopped;
     }
 
     fn play_track_from_view_playlist(&mut self, clicked_index: usize) -> PlaybackSession {
@@ -2359,7 +2408,8 @@ pub enum ContextPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
     About,
-    AddToPlaylist(u32),
+    AddSelectedToPlaylist(u32),
+    AddNowPlayingToPlaylist(u32),
     RemoveSelectedFromPlaylist,
     DeletePlaylist,
     MoveNavDown,
@@ -2383,7 +2433,8 @@ impl menu::action::MenuAction for MenuAction {
     fn message(&self) -> Self::Message {
         match self {
             MenuAction::About => Message::ToggleContextPage(ContextPage::About),
-            MenuAction::AddToPlaylist(id) => Message::AddToPlaylist(*id),
+            MenuAction::AddSelectedToPlaylist(id) => Message::AddSelectedToPlaylist(*id),
+            MenuAction::AddNowPlayingToPlaylist(id) => Message::AddNowPlayingToPlaylist(*id),
             MenuAction::RemoveSelectedFromPlaylist => Message::RemoveSelectedFromPlaylist,
             MenuAction::DeletePlaylist => Message::DeletePlaylist,
             MenuAction::MoveNavDown => Message::MoveNavDown,
@@ -2447,7 +2498,7 @@ pub enum DialogPage {
     NewPlaylist(String),
     RenamePlaylist { id: u32, name: String },
     DeletePlaylist(u32),
-    DeleteFromPlaylist,
+    DeleteSelectedFromPlaylist,
 }
 
 pub struct DialogPages {
@@ -2550,5 +2601,21 @@ impl Debug for PlaybackSession {
             .field("order", &self.order)
             .field("index", &self.index)
             .finish()
+    }
+}
+
+pub enum PlaybackStatus {
+    Stopped,
+    Playing,
+    Paused,
+}
+
+impl PlaybackStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PlaybackStatus::Playing => "Playing",
+            PlaybackStatus::Paused => "Paused",
+            PlaybackStatus::Stopped => "Stopped",
+        }
     }
 }
