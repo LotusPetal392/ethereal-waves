@@ -5,11 +5,12 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 pub struct ImageStore {
     artwork_dir: PathBuf,
-    cache: Arc<Mutex<HashMap<PathBuf, Arc<Handle>>>>,
+    cache: Arc<Mutex<HashMap<PathBuf, CachedImage>>>,
     queue: Arc<Mutex<VecDeque<PathBuf>>>,
     tx: mpsc::Sender<PathBuf>,
 }
@@ -23,6 +24,8 @@ impl ImageStore {
 
         let cache_clone = cache.clone();
         let queue_clone = queue.clone();
+
+        let cache_eviction = cache.clone();
 
         tokio::spawn(async move {
             while let Some(path) = rx.recv().await {
@@ -38,13 +41,34 @@ impl ImageStore {
                     Ok(data) => {
                         cache_clone.lock().unwrap().insert(
                             path,
-                            Arc::new(cosmic::widget::image::Handle::from_bytes(data)),
+                            CachedImage {
+                                handle: Arc::new(cosmic::widget::image::Handle::from_bytes(data)),
+                                last_used: Instant::now(),
+                            },
                         );
                     }
                     Err(err) => {
                         eprintln!("Failed to load image: {:?} {}", path, err);
                     }
                 }
+            }
+        });
+
+        tokio::spawn(async move {
+            let ttl = Duration::from_secs(20);
+            let sweep_every = Duration::from_secs(10);
+
+            loop {
+                tokio::time::sleep(sweep_every).await;
+
+                let mut cache = cache_eviction.lock().unwrap();
+                let now = Instant::now();
+
+                cache
+                    .iter()
+                    .for_each(|(path, _)| println!("Path: {:?}", path));
+
+                cache.retain(|_, entry| now.duration_since(entry.last_used) < ttl);
             }
         });
 
@@ -76,6 +100,18 @@ impl ImageStore {
 
     pub fn get(&self, path: &String) -> Option<Arc<Handle>> {
         let artwork_path = self.artwork_dir.join(path);
-        self.cache.lock().unwrap().get(&artwork_path).cloned()
+        let mut cache = self.cache.lock().unwrap();
+
+        if let Some(entry) = cache.get_mut(&artwork_path) {
+            entry.last_used = Instant::now();
+            return Some(entry.handle.clone());
+        }
+
+        None
     }
+}
+
+struct CachedImage {
+    handle: Arc<cosmic::widget::image::Handle>,
+    last_used: Instant,
 }
