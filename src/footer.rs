@@ -12,7 +12,9 @@ use cosmic::{
         font::{self, Weight},
     },
     theme, widget,
+    widget::image::Handle,
 };
+use std::sync::Arc;
 
 pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
     let cosmic_theme::Spacing {
@@ -45,9 +47,17 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
         content = content.push(updating_col);
     }
 
+    let mut handle: Option<Arc<Handle>> = None;
+
+    if let Some(now_playing) = &app.now_playing {
+        if let Some(artwork_filename) = &now_playing.artwork_filename {
+            app.image_store.request(artwork_filename.clone());
+            handle = app.image_store.get(&artwork_filename.clone());
+        }
+    }
+
     // Now playing column
-    let artwork: Element<Message> = app
-        .now_playing_handle
+    let artwork: Element<Message> = handle
         .as_ref()
         .map(|handle| {
             widget::row()
@@ -55,7 +65,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
                 .width(Length::Fixed(artwork_size as f32))
                 .height(Length::Fixed(artwork_size as f32))
                 .push(
-                    widget::image(handle)
+                    widget::image(handle.as_ref())
                         .height(artwork_size)
                         .width(artwork_size),
                 )

@@ -3,6 +3,7 @@
 use crate::config::{AppTheme, CONFIG_VERSION, Config, State};
 use crate::fl;
 use crate::footer::footer;
+use crate::image_store::ImageStore;
 use crate::key_bind::key_binds;
 use crate::library::Library;
 use crate::library::MediaMetaData;
@@ -47,7 +48,6 @@ use sha256::digest;
 use std::fmt::Debug;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    error::Error,
     fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
@@ -90,7 +90,6 @@ pub struct AppModel {
     state_handler: Option<cosmic_config::Config>,
     pub state: crate::config::State,
 
-    pub rdnn_xdg_dirs: BaseDirectories,
     app_xdg_dirs: BaseDirectories,
 
     pub library: Library,
@@ -109,8 +108,6 @@ pub struct AppModel {
     dialog_pages: DialogPages,
 
     pub now_playing: Option<MediaMetaData>,
-    pub now_playing_handle: Option<widget::image::Handle>,
-    pub artwork_dir: Option<PathBuf>,
     dragging_progress_slider: bool,
 
     view_mode: ViewMode,
@@ -138,6 +135,8 @@ pub struct AppModel {
 
     mpris_rx: UnboundedReceiver<MprisCommand>,
     pub playback_status: PlaybackStatus,
+
+    pub image_store: ImageStore,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -241,7 +240,7 @@ impl cosmic::Application for AppModel {
 
         // Initialize MPRIS
         let (mpris_tx, mpris_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (conn_tx, conn_rx) = std::sync::mpsc::sync_channel(1);
+        let (conn_tx, _) = std::sync::mpsc::sync_channel(1);
 
         tokio::spawn(async move {
             let connection = zbus::Connection::session().await.unwrap();
@@ -276,6 +275,15 @@ impl cosmic::Application for AppModel {
             futures::future::pending::<()>().await;
         });
 
+        let rdnn_xdg_dirs = xdg::BaseDirectories::with_prefix(APP_ID);
+        let app_xdg_dirs = xdg::BaseDirectories::with_prefix("ethereal-waves");
+
+        // Build out artwork cache directory
+        let artwork_dir = rdnn_xdg_dirs
+            .get_cache_home()
+            .map(|p| p.join("artwork"))
+            .unwrap_or(PathBuf::new());
+
         // Construct the app model with the runtime's core.
         let mut app = AppModel {
             core,
@@ -294,8 +302,7 @@ impl cosmic::Application for AppModel {
             config_handler: _flags.config_handler,
             state_handler: _flags.state_handler,
             state: _flags.state.clone(),
-            rdnn_xdg_dirs: xdg::BaseDirectories::with_prefix(APP_ID),
-            app_xdg_dirs: xdg::BaseDirectories::with_prefix("ethereal-waves"),
+            app_xdg_dirs: app_xdg_dirs,
             initial_load_complete: false,
             library: Library::new(),
             is_updating: false,
@@ -308,8 +315,6 @@ impl cosmic::Application for AppModel {
             player: Player::new(),
             dialog_pages: DialogPages::new(),
             now_playing: None,
-            now_playing_handle: None,
-            artwork_dir: None,
             view_mode: ViewMode::List,
             size_multiplier: _flags.state.size_multiplier,
             list_scroll_id: widget::Id::unique(),
@@ -330,6 +335,7 @@ impl cosmic::Application for AppModel {
             search_term: None,
             mpris_rx,
             playback_status: PlaybackStatus::Stopped,
+            image_store: ImageStore::new(artwork_dir.clone()),
         };
 
         // Create a startup command that sets the window title.
@@ -337,10 +343,6 @@ impl cosmic::Application for AppModel {
 
         // Load the master library and playlists
         let load_data = app.load_data();
-
-        // Build out artwork cache directory
-        app.artwork_dir = app.rdnn_xdg_dirs.get_cache_home();
-        app.artwork_dir = app.artwork_dir.map(|p| p.join("artwork"));
 
         app.update_list_row_height();
 
@@ -1854,15 +1856,6 @@ impl AppModel {
         String::from("-0.00")
     }
 
-    pub fn load_artwork(&self, filename: &String) -> Result<Vec<u8>, Box<dyn Error>> {
-        let mut path: PathBuf = self.artwork_dir.clone().unwrap();
-        path = path.join(&filename);
-
-        let bytes = fs::read(&path)?;
-
-        Ok(bytes)
-    }
-
     pub fn update_list_row_height(&mut self) {
         self.list_row_height = 5.0 * self.size_multiplier;
     }
@@ -2266,8 +2259,6 @@ impl AppModel {
             }
         }
 
-        self.update_now_playing();
-
         // Load and play the new track
         if let Some(session) = &self.playback_session {
             let track = &session.order[session.index];
@@ -2278,6 +2269,8 @@ impl AppModel {
                 self.playback_status = PlaybackStatus::Playing;
             }
         }
+
+        self.update_now_playing();
     }
 
     fn play_pause(&mut self) {
@@ -2305,6 +2298,7 @@ impl AppModel {
 
         self.player.play();
         self.playback_status = PlaybackStatus::Playing;
+        self.update_now_playing();
     }
 
     fn pause(&mut self) {
@@ -2354,24 +2348,6 @@ impl AppModel {
             self.now_playing = Some(track.metadata);
         } else {
             self.now_playing = None;
-        }
-
-        // Load artwork
-        self.now_playing_handle = None;
-
-        if let Some(now_playing) = &self.now_playing {
-            if let Some(artwork_filename) = &now_playing.artwork_filename {
-                let bytes = match self.load_artwork(&artwork_filename) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        eprintln!("Failed to load album artwork: {:?}", error);
-                        Vec::new()
-                    }
-                };
-                if bytes.len() > 0 {
-                    self.now_playing_handle = Some(widget::image::Handle::from_bytes(bytes));
-                }
-            }
         }
     }
 }

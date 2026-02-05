@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod footer;
 mod i18n;
+mod image_store;
 mod key_bind;
 mod library;
 mod menu;
