@@ -64,10 +64,6 @@ impl ImageStore {
                 let mut cache = cache_eviction.lock().unwrap();
                 let now = Instant::now();
 
-                cache
-                    .iter()
-                    .for_each(|(path, _)| println!("Path: {:?}", path));
-
                 cache.retain(|_, entry| now.duration_since(entry.last_used) < ttl);
             }
         });
