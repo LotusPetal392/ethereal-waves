@@ -3,7 +3,6 @@
 use crate::app::{AppModel, Message, SortBy, SortDirection};
 use crate::fl;
 use crate::playlist::Playlist;
-use crate::playlist::Track;
 use cosmic::iced_core::text::Wrapping;
 use cosmic::{
     cosmic_theme,
@@ -18,51 +17,10 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
         ..
     } = theme::active().cosmic().spacing;
 
-    let search = app.search_term.as_deref().unwrap_or("").to_lowercase();
-
-    let tracks: Vec<(usize, Track)> = if app.search_term.is_some() {
-        active_playlist
-            .tracks()
-            .iter()
-            .cloned()
-            .enumerate()
-            .filter(|(_, t)| {
-                [
-                    t.metadata.title.as_deref(),
-                    t.metadata.album.as_deref(),
-                    t.metadata.artist.as_deref(),
-                ]
-                .into_iter()
-                .flatten()
-                .any(|v| v.to_lowercase().contains(&search))
-            })
-            .collect::<Vec<(usize, Track)>>()
-    } else {
-        active_playlist
-            .tracks()
-            .iter()
-            .cloned()
-            .enumerate()
-            .collect()
+    // Get pre-calculated view model
+    let Some(view_model) = app.calculate_list_view() else {
+        return widget::column();
     };
-
-    let mut list_start = app.list_start;
-
-    let tracks_len = tracks.len();
-    let list_end = (list_start + app.list_visible_row_count + 1).min(tracks_len);
-
-    if list_start >= list_end {
-        list_start = 0 as usize;
-    }
-
-    let take = list_end.saturating_sub(list_start);
-
-    // Calculations for row height
-    let row_stride: f32 = app.list_row_height + app.list_divider_height;
-
-    let chars: f32 = tracks_len.to_string().len() as f32;
-    let number_column_width: f32 = chars * 11.0;
-    let icon_column_width: f32 = 24.0; // Width for the play icon column
 
     let sort_icon: String = match app.state.sort_direction {
         SortDirection::Ascending => "pan-down-symbolic".into(),
@@ -75,138 +33,94 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
         Alignment::Center
     };
 
-    // Check if this playlist is the one currently playing
-    let is_playing_playlist = app
-        .playback_session
-        .as_ref()
-        .map(|session| session.playlist_id == active_playlist.id())
-        .unwrap_or(false);
-
-    let mut content = widget::column();
-
-    content = content.push(
-        widget::row()
-            .spacing(space_xxs)
-            .push(widget::horizontal_space().width(space_xxxs))
-            .push(widget::horizontal_space().width(Length::Fixed(icon_column_width))) // Space for icon column
-            .push(
-                widget::text::heading("#")
-                    .align_x(Alignment::End)
-                    .width(Length::Fixed(number_column_width)),
-            )
-            .push(
-                widget::button::custom({
-                    let mut row = widget::row()
-                        .align_y(Alignment::Center)
-                        .spacing(space_xxs)
-                        .push(widget::text::heading(fl!("title")));
-
-                    if app.state.sort_by == SortBy::Title {
-                        row = row.push(widget::icon::from_name(sort_icon.as_str()));
-                    }
-
-                    row
-                })
-                .class(button_style(false, true))
-                .on_press(Message::ListViewSort(SortBy::Title))
-                .padding(0)
-                .width(Length::FillPortion(1)),
-            )
-            .push(
-                widget::button::custom({
-                    let mut row = widget::row()
-                        .align_y(Alignment::Center)
-                        .spacing(space_xxs)
-                        .push(widget::text::heading(fl!("album")));
-
-                    if app.state.sort_by == SortBy::Album {
-                        row = row.push(widget::icon::from_name(sort_icon.as_str()));
-                    }
-
-                    row
-                })
-                .class(button_style(false, true))
-                .on_press(Message::ListViewSort(SortBy::Album))
-                .padding(0)
-                .width(Length::FillPortion(1)),
-            )
-            .push(
-                widget::button::custom({
-                    let mut row = widget::row()
-                        .align_y(Alignment::Center)
-                        .spacing(space_xxs)
-                        .push(widget::text::heading(fl!("artist")));
-
-                    if app.state.sort_by == SortBy::Artist {
-                        row = row.push(widget::icon::from_name(sort_icon.as_str()));
-                    }
-
-                    row
-                })
-                .class(button_style(false, true))
-                .on_press(Message::ListViewSort(SortBy::Artist))
-                .padding(0)
-                .width(Length::FillPortion(1)),
-            )
-            .push(widget::horizontal_space().width(space_xxs)),
-    );
-    content = content.push(widget::divider::horizontal::default());
-
-    let mut count: u32 = list_start as u32 + 1;
-
     let wrapping = if app.config.list_text_wrap {
         Wrapping::Word
     } else {
         Wrapping::None
     };
 
+    let mut content = widget::column();
+
+    // Header row
+    content = content.push(
+        widget::row()
+            .spacing(space_xxs)
+            .push(widget::horizontal_space().width(space_xxxs))
+            .push(widget::horizontal_space().width(Length::Fixed(view_model.icon_column_width)))
+            .push(
+                widget::text::heading("#")
+                    .align_x(Alignment::End)
+                    .width(Length::Fixed(view_model.number_column_width)),
+            )
+            .push(create_sort_button(
+                fl!("title"),
+                SortBy::Title,
+                &app.state,
+                &sort_icon,
+                space_xxs,
+            ))
+            .push(create_sort_button(
+                fl!("album"),
+                SortBy::Album,
+                &app.state,
+                &sort_icon,
+                space_xxs,
+            ))
+            .push(create_sort_button(
+                fl!("artist"),
+                SortBy::Artist,
+                &app.state,
+                &sort_icon,
+                space_xxs,
+            ))
+            .push(widget::horizontal_space().width(space_xxs)),
+    );
+    content = content.push(widget::divider::horizontal::default());
+
+    // Build rows
     let mut rows = widget::column();
+    rows = rows.push(widget::vertical_space().height(Length::Fixed(
+        view_model.list_start as f32 * view_model.row_stride,
+    )));
 
-    rows =
-        rows.push(widget::vertical_space().height(Length::Fixed(list_start as f32 * row_stride)));
+    let mut count: u32 = view_model.list_start as u32 + 1;
 
-    for (index, track) in tracks.iter().skip(list_start).take(take).enumerate() {
+    for (index, track) in view_model
+        .visible_tracks
+        .iter()
+        .skip(view_model.list_start)
+        .take(view_model.take)
+        .enumerate()
+    {
         let id = track.1.metadata.id.clone().unwrap();
-
-        // Check if this is the currently playing track by comparing IDs
-        let is_playing_track = is_playing_playlist
-            && app
-                .playback_session
-                .as_ref()
-                .and_then(|session| {
-                    session.order.get(session.index).and_then(|playing_track| {
-                        let playing_id = playing_track.metadata.id.clone()?;
-                        let current_id = track.1.metadata.id.clone()?;
-                        Some(playing_id == current_id)
-                    })
-                })
-                .unwrap_or(false);
+        let is_playing_track = app.is_track_playing(&track.1, &view_model);
 
         let mut row_element = widget::row()
             .spacing(space_xxs)
             .height(Length::Fixed(app.list_row_height));
 
-        // Add play icon column
+        // Play icon column
         if is_playing_track {
             row_element = row_element.push(
                 widget::container(
                     widget::icon::from_name("media-playback-start-symbolic").size(16),
                 )
-                .width(Length::Fixed(icon_column_width))
+                .width(Length::Fixed(view_model.icon_column_width))
                 .align_x(Alignment::Center)
                 .align_y(align)
                 .height(app.list_row_height),
             );
         } else {
-            row_element = row_element
-                .push(widget::horizontal_space().width(Length::Fixed(icon_column_width)));
+            row_element = row_element.push(
+                widget::horizontal_space().width(Length::Fixed(view_model.icon_column_width)),
+            );
         }
 
-        // Add track number column
+        // Track number
         row_element = row_element.push(
             widget::container(
                 widget::text(count.to_string())
-                    .width(Length::Fixed(number_column_width))
+                    .width(Length::Fixed(view_model.number_column_width))
                     .align_x(Alignment::End)
                     .align_y(align)
                     .height(app.list_row_height),
@@ -214,6 +128,7 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
             .clip(true),
         );
 
+        // Title, Album, Artist columns
         row_element = row_element
             .push(
                 widget::container(
@@ -262,7 +177,7 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
         rows =
             rows.push(widget::mouse_area(row_button).on_release(Message::ListSelectRow(track.0)));
 
-        let visible_count = list_end.saturating_sub(list_start);
+        let visible_count = view_model.list_end.saturating_sub(view_model.list_start);
         let is_last_visible = index + 1 == visible_count;
         if !is_last_visible {
             rows = rows.push(
@@ -277,10 +192,8 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
         count += 1;
     }
 
-    let viewport_height = tracks_len as f32 * row_stride;
-
     let scrollable_contents = widget::row()
-        .push(widget::vertical_space().height(Length::Fixed(viewport_height)))
+        .push(widget::vertical_space().height(Length::Fixed(view_model.viewport_height)))
         .push(widget::horizontal_space().width(space_xxs))
         .push(rows)
         .push(widget::horizontal_space().width(space_xxs));
@@ -293,6 +206,30 @@ pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column
     content = content.push(scroller);
 
     content
+}
+
+// Helper function for sort buttons
+fn create_sort_button<'a>(
+    label: String,
+    sort_by: SortBy,
+    state: &crate::config::State,
+    sort_icon: &str,
+    spacing: u16,
+) -> widget::Button<'a, Message> {
+    let mut row = widget::row()
+        .align_y(Alignment::Center)
+        .spacing(spacing)
+        .push(widget::text::heading(label));
+
+    if state.sort_by == sort_by {
+        row = row.push(widget::icon::from_name(sort_icon));
+    }
+
+    widget::button::custom(row)
+        .class(button_style(false, true))
+        .on_press(Message::ListViewSort(sort_by))
+        .padding(0)
+        .width(Length::FillPortion(1))
 }
 
 fn button_style(selected: bool, heading: bool) -> theme::Button {

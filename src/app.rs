@@ -1183,10 +1183,18 @@ impl cosmic::Application for AppModel {
 
             Message::SearchClear => {
                 self.search_term = None;
+                return scrollable::scroll_to(
+                    self.list_scroll_id.clone(),
+                    AbsoluteOffset { x: 0.0, y: 0.0 },
+                );
             }
 
             Message::SearchInput(term) => {
                 self.search_term = Some(term);
+                return scrollable::scroll_to(
+                    self.list_scroll_id.clone(),
+                    AbsoluteOffset { x: 0.0, y: 0.0 },
+                );
             }
 
             // Add selected paths from the Open dialog
@@ -1615,6 +1623,13 @@ impl cosmic::Application for AppModel {
         if let Some(Page::Playlist(pid)) = self.nav.data(id) {
             if self.view_playlist != Some(*pid) {
                 self.list_last_selected_id = None;
+                return Task::batch([
+                    self.update_title(),
+                    scrollable::scroll_to(
+                        self.list_scroll_id.clone(),
+                        AbsoluteOffset { x: 0.0, y: 0.0 },
+                    ),
+                ]);
             }
             self.view_playlist = Some(*pid);
         }
@@ -2350,6 +2365,89 @@ impl AppModel {
             self.now_playing = None;
         }
     }
+
+    pub fn calculate_list_view(&self) -> Option<ListViewModel> {
+        let active_playlist = self
+            .playlists
+            .iter()
+            .find(|p| Some(p.id()) == self.view_playlist)?;
+
+        let search = self.search_term.as_deref().unwrap_or("").to_lowercase();
+
+        let visible_tracks: Vec<(usize, Track)> = if self.search_term.is_some() {
+            active_playlist
+                .tracks()
+                .iter()
+                .cloned()
+                .enumerate()
+                .filter(|(_, t)| {
+                    [
+                        t.metadata.title.as_deref(),
+                        t.metadata.album.as_deref(),
+                        t.metadata.artist.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|v| v.to_lowercase().contains(&search))
+                })
+                .collect()
+        } else {
+            active_playlist
+                .tracks()
+                .iter()
+                .cloned()
+                .enumerate()
+                .collect()
+        };
+
+        let mut list_start = self.list_start;
+        let tracks_len = visible_tracks.len();
+        let list_end = (list_start + self.list_visible_row_count + 1).min(tracks_len);
+
+        if list_start >= list_end {
+            list_start = 0;
+        }
+
+        let take = list_end.saturating_sub(list_start);
+        let row_stride = self.list_row_height + self.list_divider_height;
+        let chars = tracks_len.to_string().len() as f32;
+        let number_column_width = chars * 11.0;
+        let icon_column_width = 24.0;
+        let viewport_height = tracks_len as f32 * row_stride;
+
+        let is_playing_playlist = self
+            .playback_session
+            .as_ref()
+            .map(|session| session.playlist_id == active_playlist.id())
+            .unwrap_or(false);
+
+        Some(ListViewModel {
+            visible_tracks,
+            list_start,
+            list_end,
+            take,
+            number_column_width,
+            icon_column_width,
+            row_stride,
+            viewport_height,
+            is_playing_playlist,
+        })
+    }
+
+    pub fn is_track_playing(&self, track: &Track, view_model: &ListViewModel) -> bool {
+        view_model.is_playing_playlist
+            && self
+                .playback_session
+                .as_ref()
+                .and_then(|session| {
+                    session.order.get(session.index).and_then(|playing_track| {
+                        let playing_id = playing_track.metadata.id.clone()?;
+                        let current_id = track.metadata.id.clone()?;
+                        Some(playing_id == current_id)
+                    })
+                })
+                .unwrap_or(false)
+    }
 }
 
 #[derive(Clone)]
@@ -2594,4 +2692,16 @@ impl PlaybackStatus {
             PlaybackStatus::Stopped => "Stopped",
         }
     }
+}
+
+pub struct ListViewModel {
+    pub visible_tracks: Vec<(usize, Track)>,
+    pub list_start: usize,
+    pub list_end: usize,
+    pub take: usize,
+    pub number_column_width: f32,
+    pub icon_column_width: f32,
+    pub row_stride: f32,
+    pub viewport_height: f32,
+    pub is_playing_playlist: bool,
 }

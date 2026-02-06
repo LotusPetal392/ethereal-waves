@@ -12,7 +12,8 @@ A basic music player based on libcosmic. It's still very much a work in progress
 - Flac
 - Wav
 
-## Planned Features (not in any particular order)
+## Planned Features
+Non-exhaustive list of planned features in no particular order:
 - Gapless playback
 - Grid view
 - More column options in list view
@@ -24,7 +25,6 @@ A basic music player based on libcosmic. It's still very much a work in progress
 - More keyboard shortcuts
 - Drag and drop support
 - Improved error handling
-- More features to come!
 
 ## Keybindings
 - `Ctrl + U`: Update Library
