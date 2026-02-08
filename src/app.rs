@@ -425,7 +425,7 @@ impl cosmic::Application for AppModel {
 
         let content: Column<_> = match playlist {
             Some(p) if p.is_library() && p.tracks().is_empty() => empty_library::content(),
-            Some(p) => list_view::content(self, p),
+            Some(_) => list_view::content(self),
             None => empty_library::content(),
         };
 
@@ -525,7 +525,7 @@ impl cosmic::Application for AppModel {
                 let view_playlist = self
                     .playlists
                     .iter()
-                    .find(|p| p.id() == self.view_playlist.unwrap())
+                    .find(|p| Some(p.id()) == self.view_playlist)
                     .unwrap();
 
                 let dialog = widget::dialog()
@@ -1621,6 +1621,8 @@ impl cosmic::Application for AppModel {
         self.nav.activate(id);
 
         if let Some(Page::Playlist(pid)) = self.nav.data(id) {
+            self.view_playlist = Some(*pid);
+
             if self.view_playlist != Some(*pid) {
                 self.list_last_selected_id = None;
                 return Task::batch([
@@ -1631,7 +1633,6 @@ impl cosmic::Application for AppModel {
                     ),
                 ]);
             }
-            self.view_playlist = Some(*pid);
         }
 
         self.update_title()
@@ -2076,14 +2077,15 @@ impl AppModel {
     fn rebuild_nav_from_order(&mut self, items: Vec<NavPlaylistItem>, activate_id: u32) {
         self.nav.clear();
 
+        // Add the library first
         let library_id = self.playlists.iter().find(|p| p.is_library()).unwrap().id();
-
         self.nav
             .insert()
             .text(fl!("library"))
             .data(Page::Playlist(library_id))
             .icon(widget::icon::from_name("folder-music-symbolic"));
 
+        // Add the playlists
         for (i, item) in items.iter().enumerate() {
             let Some(_) = self.playlists.iter().find(|p| p.id() == item.id) else {
                 continue;

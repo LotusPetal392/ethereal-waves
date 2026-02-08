@@ -24,7 +24,7 @@ Non-exhaustive list of planned features in no particular order:
 - Condensed responsive layout
 - More keyboard shortcuts
 - Drag and drop support
-- Improved error handling
+- Playlist duplicate management
 
 ## Keybindings
 - `Ctrl + U`: Update Library

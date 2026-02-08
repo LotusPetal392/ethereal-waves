@@ -2,7 +2,6 @@
 
 use crate::app::{AppModel, Message, SortBy, SortDirection};
 use crate::fl;
-use crate::playlist::Playlist;
 use cosmic::iced_core::text::Wrapping;
 use cosmic::{
     cosmic_theme,
@@ -10,7 +9,7 @@ use cosmic::{
     theme, widget,
 };
 
-pub fn content<'a>(app: &AppModel, active_playlist: &Playlist) -> widget::Column<'a, Message> {
+pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
     let cosmic_theme::Spacing {
         space_xxs,
         space_xxxs,
