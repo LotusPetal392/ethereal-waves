@@ -30,6 +30,7 @@ use cosmic::{
         keyboard::{Event as KeyEvent, Key, Modifiers, key::Named},
         window::Event as WindowEvent,
     },
+    iced_core::text::Wrapping,
     theme,
     widget::{
         self, Column,
@@ -114,10 +115,6 @@ pub struct AppModel {
 
     size_multiplier: f32,
     pub list_scroll_id: widget::Id,
-    pub list_row_height: f32,
-    pub list_divider_height: f32,
-    pub list_view_scroll_offset: f32,
-    pub list_view_height: f32,
     pub list_start: usize,
     pub list_visible_row_count: usize,
     list_last_clicked: Option<Instant>,
@@ -318,10 +315,6 @@ impl cosmic::Application for AppModel {
             view_mode: ViewMode::List,
             size_multiplier: _flags.state.size_multiplier,
             list_scroll_id: widget::Id::unique(),
-            list_row_height: 20.0,
-            list_divider_height: 1.0,
-            list_view_scroll_offset: 0.0,
-            list_view_height: 0.0,
             list_start: 0,
             list_visible_row_count: 0,
             list_last_clicked: None,
@@ -343,8 +336,6 @@ impl cosmic::Application for AppModel {
 
         // Load the master library and playlists
         let load_data = app.load_data();
-
-        app.update_list_row_height();
 
         (app, Task::batch([update_title, load_data]))
     }
@@ -917,26 +908,32 @@ impl cosmic::Application for AppModel {
                 }
 
                 if matches!(self.view_mode, ViewMode::List) {
-                    match key {
-                        Key::Named(Named::PageUp) => {
-                            return scrollable::scroll_by::<Action<Message>>(
-                                self.list_scroll_id.clone(),
-                                scrollable::AbsoluteOffset {
-                                    x: 0.0,
-                                    y: -self.list_view_height,
-                                },
-                            );
+                    if let Some(view_model) = self.calculate_list_view() {
+                        // Calculate scroll amount: one full page of visible rows
+                        let scroll_amount =
+                            self.list_visible_row_count as f32 * view_model.row_stride;
+
+                        match key {
+                            Key::Named(Named::PageUp) => {
+                                return scrollable::scroll_by::<Action<Message>>(
+                                    self.list_scroll_id.clone(),
+                                    scrollable::AbsoluteOffset {
+                                        x: 0.0,
+                                        y: -scroll_amount,
+                                    },
+                                );
+                            }
+                            Key::Named(Named::PageDown) => {
+                                return scrollable::scroll_by::<Action<Message>>(
+                                    self.list_scroll_id.clone(),
+                                    scrollable::AbsoluteOffset {
+                                        x: 0.0,
+                                        y: scroll_amount,
+                                    },
+                                );
+                            }
+                            _ => {}
                         }
-                        Key::Named(Named::PageDown) => {
-                            return scrollable::scroll_by::<Action<Message>>(
-                                self.list_scroll_id.clone(),
-                                scrollable::AbsoluteOffset {
-                                    x: 0.0,
-                                    y: self.list_view_height,
-                                },
-                            );
-                        }
-                        _ => {}
                     }
                 }
             }
@@ -987,22 +984,25 @@ impl cosmic::Application for AppModel {
 
             // Handle scroll events from scrollable widgets
             Message::ListViewScroll(viewport) => {
-                let row_stride = self.list_row_height + self.list_divider_height;
+                let scroll_offset = viewport.absolute_offset().y;
                 let viewport_height = viewport.bounds().height;
 
-                self.list_view_scroll_offset = viewport.absolute_offset().y;
+                // Calculate row stride directly (same logic as in calculate_list_view)
+                let row_height = 5.0 * self.size_multiplier;
+                let divider_height = 1.0;
+                let row_stride = row_height + divider_height;
 
-                // Offset
-                if self.list_view_scroll_offset == 0.0 || row_stride == 0.0 {
+                // Update scroll position
+                if scroll_offset == 0.0 || row_stride == 0.0 {
                     self.list_start = 0;
                 } else {
-                    self.list_start = (self.list_view_scroll_offset / row_stride).floor() as usize;
+                    self.list_start = (scroll_offset / row_stride).floor() as usize;
                 }
 
-                // Visible rows
+                // Update visible row count
                 self.list_visible_row_count = (viewport_height / row_stride).ceil() as usize;
 
-                // Clamp
+                // Clamp to valid range
                 let tracks_len = self
                     .view_playlist
                     .and_then(|id| self.playlists.iter().find(|p| p.id() == id))
@@ -1011,8 +1011,6 @@ impl cosmic::Application for AppModel {
 
                 let max_start = tracks_len.saturating_sub(self.list_visible_row_count);
                 self.list_start = self.list_start.min(max_start);
-
-                self.list_view_height = viewport.bounds().height;
             }
 
             Message::ListViewSort(new_sort_by) => {
@@ -1271,13 +1269,18 @@ impl cosmic::Application for AppModel {
                     self.core.window.show_context = true;
                 }
 
-                return scrollable::scroll_to::<Action<Message>>(
-                    self.list_scroll_id.clone(),
-                    AbsoluteOffset {
-                        x: 0.0,
-                        y: self.list_view_scroll_offset,
-                    },
-                );
+                // Restore scroll position from view model
+                if let Some(view_model) = self.calculate_list_view() {
+                    return scrollable::scroll_to::<Action<Message>>(
+                        self.list_scroll_id.clone(),
+                        AbsoluteOffset {
+                            x: 0.0,
+                            y: view_model.scroll_offset,
+                        },
+                    );
+                }
+
+                return Task::none();
             }
 
             Message::ToggleListTextWrap(list_text_wrap) => {
@@ -1598,7 +1601,6 @@ impl cosmic::Application for AppModel {
                     self.size_multiplier = 30.0;
                 }
 
-                self.update_list_row_height();
                 state_set!(size_multiplier, self.size_multiplier);
             }
 
@@ -1608,7 +1610,6 @@ impl cosmic::Application for AppModel {
                     self.size_multiplier = 4.0;
                 }
 
-                self.update_list_row_height();
                 state_set!(size_multiplier, self.size_multiplier);
             }
         }
@@ -1870,10 +1871,6 @@ impl AppModel {
         }
 
         String::from("-0.00")
-    }
-
-    pub fn update_list_row_height(&mut self) {
-        self.list_row_height = 5.0 * self.size_multiplier;
     }
 
     /// Load library and playlists
@@ -2404,6 +2401,11 @@ impl AppModel {
 
         let mut list_start = self.list_start;
         let tracks_len = visible_tracks.len();
+
+        let row_height = 5.0 * self.size_multiplier;
+        let divider_height = 1.0;
+        let row_stride = row_height + divider_height;
+
         let list_end = (list_start + self.list_visible_row_count + 1).min(tracks_len);
 
         if list_start >= list_end {
@@ -2411,7 +2413,6 @@ impl AppModel {
         }
 
         let take = list_end.saturating_sub(list_start);
-        let row_stride = self.list_row_height + self.list_divider_height;
         let chars = tracks_len.to_string().len() as f32;
         let number_column_width = chars * 11.0;
         let icon_column_width = 24.0;
@@ -2423,6 +2424,26 @@ impl AppModel {
             .map(|session| session.playlist_id == active_playlist.id())
             .unwrap_or(false);
 
+        // Determine UI settings from config
+        let wrapping = if self.config.list_text_wrap {
+            Wrapping::Word
+        } else {
+            Wrapping::None
+        };
+
+        let row_align = if self.config.list_row_align_top {
+            Alignment::Start
+        } else {
+            Alignment::Center
+        };
+
+        let sort_direction_icon = match self.state.sort_direction {
+            SortDirection::Ascending => "pan-down-symbolic".to_string(),
+            SortDirection::Descending => "pan-up-symbolic".to_string(),
+        };
+
+        let scroll_offset = list_start as f32 * row_stride;
+
         Some(ListViewModel {
             visible_tracks,
             list_start,
@@ -2433,6 +2454,12 @@ impl AppModel {
             row_stride,
             viewport_height,
             is_playing_playlist,
+            row_height,
+            divider_height,
+            scroll_offset: scroll_offset,
+            wrapping,
+            row_align,
+            sort_direction_icon,
         })
     }
 
@@ -2706,4 +2733,10 @@ pub struct ListViewModel {
     pub row_stride: f32,
     pub viewport_height: f32,
     pub is_playing_playlist: bool,
+    pub row_height: f32,
+    pub divider_height: f32,
+    pub scroll_offset: f32,
+    pub wrapping: Wrapping,
+    pub row_align: Alignment,
+    pub sort_direction_icon: String,
 }

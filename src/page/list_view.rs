@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::app::{AppModel, Message, SortBy, SortDirection};
+use crate::app::{AppModel, Message, SortBy};
 use crate::fl;
-use cosmic::iced_core::text::Wrapping;
 use cosmic::{
     cosmic_theme,
     iced::{Alignment, Color, Length},
@@ -16,28 +15,11 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
         ..
     } = theme::active().cosmic().spacing;
 
-    // Get pre-calculated view model
+    // Get pre-calculated view model with all list view data
     let Some(view_model) = app.calculate_list_view() else {
         return widget::column();
     };
-
-    let sort_icon: String = match app.state.sort_direction {
-        SortDirection::Ascending => "pan-down-symbolic".into(),
-        SortDirection::Descending => "pan-up-symbolic".into(),
-    };
-
-    let align = if app.config.list_row_align_top {
-        Alignment::Start
-    } else {
-        Alignment::Center
-    };
-
-    let wrapping = if app.config.list_text_wrap {
-        Wrapping::Word
-    } else {
-        Wrapping::None
-    };
-
+    println!("{:?}", view_model.list_start);
     let mut content = widget::column();
 
     // Header row
@@ -55,21 +37,21 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
                 fl!("title"),
                 SortBy::Title,
                 &app.state,
-                &sort_icon,
+                &view_model.sort_direction_icon,
                 space_xxs,
             ))
             .push(create_sort_button(
                 fl!("album"),
                 SortBy::Album,
                 &app.state,
-                &sort_icon,
+                &view_model.sort_direction_icon,
                 space_xxs,
             ))
             .push(create_sort_button(
                 fl!("artist"),
                 SortBy::Artist,
                 &app.state,
-                &sort_icon,
+                &view_model.sort_direction_icon,
                 space_xxs,
             ))
             .push(widget::horizontal_space().width(space_xxs)),
@@ -96,7 +78,7 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
 
         let mut row_element = widget::row()
             .spacing(space_xxs)
-            .height(Length::Fixed(app.list_row_height));
+            .height(Length::Fixed(view_model.row_height));
 
         // Play icon column
         if is_playing_track {
@@ -106,8 +88,8 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
                 )
                 .width(Length::Fixed(view_model.icon_column_width))
                 .align_x(Alignment::Center)
-                .align_y(align)
-                .height(app.list_row_height),
+                .align_y(view_model.row_align)
+                .height(view_model.row_height),
             );
         } else {
             row_element = row_element.push(
@@ -121,8 +103,8 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
                 widget::text(count.to_string())
                     .width(Length::Fixed(view_model.number_column_width))
                     .align_x(Alignment::End)
-                    .align_y(align)
-                    .height(app.list_row_height),
+                    .align_y(view_model.row_align)
+                    .height(view_model.row_height),
             )
             .clip(true),
         );
@@ -139,9 +121,9 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
                             .clone()
                             .unwrap_or_else(|| track.1.path.to_string_lossy().to_string()),
                     )
-                    .align_y(align)
-                    .height(app.list_row_height)
-                    .wrapping(wrapping)
+                    .align_y(view_model.row_align)
+                    .height(view_model.row_height)
+                    .wrapping(view_model.wrapping)
                     .width(Length::FillPortion(1)),
                 )
                 .clip(true),
@@ -149,9 +131,9 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
             .push(
                 widget::container(
                     widget::text(track.1.metadata.album.clone().unwrap_or_default())
-                        .align_y(align)
-                        .height(app.list_row_height)
-                        .wrapping(wrapping)
+                        .align_y(view_model.row_align)
+                        .height(view_model.row_height)
+                        .wrapping(view_model.wrapping)
                         .width(Length::FillPortion(1)),
                 )
                 .clip(true),
@@ -159,9 +141,9 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
             .push(
                 widget::container(
                     widget::text(track.1.metadata.artist.clone().unwrap_or_default())
-                        .align_y(align)
-                        .height(app.list_row_height)
-                        .wrapping(wrapping)
+                        .align_y(view_model.row_align)
+                        .height(view_model.row_height)
+                        .wrapping(view_model.wrapping)
                         .width(Length::FillPortion(1)),
                 )
                 .clip(true),
@@ -181,7 +163,7 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
         if !is_last_visible {
             rows = rows.push(
                 widget::container(widget::divider::horizontal::default())
-                    .height(Length::Fixed(app.list_divider_height))
+                    .height(Length::Fixed(view_model.divider_height))
                     .align_x(Alignment::Center)
                     .align_y(Alignment::Center)
                     .clip(true),
