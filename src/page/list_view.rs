@@ -19,7 +19,7 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
     let Some(view_model) = app.calculate_list_view() else {
         return widget::column();
     };
-    println!("{:?}", view_model.list_start);
+
     let mut content = widget::column();
 
     // Header row
@@ -88,7 +88,7 @@ pub fn content<'a>(app: &AppModel) -> widget::Column<'a, Message> {
                 )
                 .width(Length::Fixed(view_model.icon_column_width))
                 .align_x(Alignment::Center)
-                .align_y(view_model.row_align)
+                .align_y(Alignment::Center)
                 .height(view_model.row_height),
             );
         } else {

@@ -25,6 +25,7 @@ Non-exhaustive list of planned features in no particular order:
 - More keyboard shortcuts
 - Drag and drop support
 - Playlist duplicate management
+- Partial update (Only add new tracks)
 
 ## Keybindings
 - `Ctrl + U`: Update Library
@@ -42,12 +43,12 @@ Non-exhaustive list of planned features in no particular order:
 - `Ctrl + Shift + click`: Select Range
 
 ## Installation
-This project uses `just` for building. To install it, run the following command:
+This project uses `just` for building. To run development mode:
 ```
-cargo install just
+just run-dev
 ```
-Make sure ~/.cargo/bin is in your PATH. Run
+
+To install:
 ```
 just install
 ```
-to install.

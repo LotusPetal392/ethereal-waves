@@ -727,7 +727,6 @@ impl cosmic::Application for AppModel {
             }
 
             Message::ChangeTrack(id, index) => {
-                // TODO: Make a proper artwork cache
                 if self.library.from_id(&id).is_none() {
                     return Task::none();
                 }
