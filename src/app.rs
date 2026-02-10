@@ -1188,9 +1188,9 @@ impl cosmic::Application for AppModel {
 
             Message::SearchClear => {
                 self.search_term = None;
-                // Reset viewport state when clearing search
+
+                // Reset viewport scroll to top
                 self.list_start = 0;
-                self.list_visible_row_count = 0;
                 return scrollable::scroll_to(
                     self.list_scroll_id.clone(),
                     AbsoluteOffset { x: 0.0, y: 0.0 },
@@ -1199,9 +1199,9 @@ impl cosmic::Application for AppModel {
 
             Message::SearchInput(term) => {
                 self.search_term = Some(term);
-                // Reset viewport state when search term changes
+
+                // Reset viewport scroll to top
                 self.list_start = 0;
-                self.list_visible_row_count = 0;
                 return scrollable::scroll_to(
                     self.list_scroll_id.clone(),
                     AbsoluteOffset { x: 0.0, y: 0.0 },
