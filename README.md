@@ -7,10 +7,11 @@ A basic music player based on libcosmic. It's still very much a work in progress
 
 ## Supported Formats
 - MP3
+- M4A
 - Ogg
 - Opus
 - Flac
-- Wav
+- WAV
 
 ## Planned Features
 Non-exhaustive list of planned features in no particular order:

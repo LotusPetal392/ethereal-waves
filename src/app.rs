@@ -575,7 +575,7 @@ impl cosmic::Application for AppModel {
         ];
 
         // Tick
-        subscriptions.push(iced::time::every(Duration::from_millis(50)).map(|_| Message::Tick));
+        subscriptions.push(iced::time::every(Duration::from_millis(100)).map(|_| Message::Tick));
 
         Subscription::batch(subscriptions)
     }
@@ -669,19 +669,22 @@ impl cosmic::Application for AppModel {
             }
 
             Message::AddSelectedToPlaylist(destination_id) => {
-                let source_id = self.view_playlist.unwrap();
+                let Some(source_id) = self.view_playlist else {
+                    return Task::none();
+                };
 
-                let source_index = self
-                    .playlists
-                    .iter()
-                    .position(|p| p.id() == source_id)
-                    .unwrap();
+                let Some(source_index) = self.playlists.iter().position(|p| p.id() == source_id)
+                else {
+                    eprintln!("Source playlist not found");
+                    return Task::none();
+                };
 
-                let destination_index = self
-                    .playlists
-                    .iter()
-                    .position(|p| p.id() == destination_id)
-                    .unwrap();
+                let Some(destination_index) =
+                    self.playlists.iter().position(|p| p.id() == destination_id)
+                else {
+                    eprintln!("Destination playlist not found");
+                    return Task::none();
+                };
 
                 if source_index == destination_index {
                     return Task::none();
@@ -765,34 +768,37 @@ impl cosmic::Application for AppModel {
                             // Same playlist - need to find the clicked track in the session order
                             self.stop();
 
+                            let view_playlist_id = self.view_playlist;
+
+                            let clicked_track_id = self
+                                .playlists
+                                .iter()
+                                .find(|p| p.id() == view_playlist_id.unwrap_or(0))
+                                .and_then(|playlist| {
+                                    if index < playlist.tracks().len() {
+                                        playlist.tracks()[index].metadata.id.clone()
+                                    } else {
+                                        None
+                                    }
+                                });
+
                             if let Some(session) = &mut self.playback_session {
-                                let playlist = self
-                                    .playlists
-                                    .iter()
-                                    .find(|p| p.id() == self.view_playlist.unwrap_or(0))
-                                    .unwrap();
-
-                                let clicked_track = &playlist.tracks()[index];
-
-                                // Find this track in the session's order
-                                let session_index = session
-                                    .order
-                                    .iter()
-                                    .position(|t| {
-                                        t.metadata.id.clone().unwrap_or("".into())
-                                            == clicked_track
-                                                .metadata
+                                if let Some(id) = clicked_track_id {
+                                    session.index = session
+                                        .order
+                                        .iter()
+                                        .position(|t| {
+                                            t.metadata
                                                 .id
-                                                .clone()
-                                                .unwrap_or("".into())
-                                    })
-                                    .unwrap_or(0);
+                                                .as_ref()
+                                                .map_or(false, |track_id| track_id == &id)
+                                        })
+                                        .unwrap_or(0);
 
-                                session.index = session_index;
-                                let track = &session.order[session.index];
-
-                                if let Ok(url) = Url::from_file_path(&track.path) {
-                                    self.player.load(url.as_str());
+                                    let track = &session.order[session.index];
+                                    if let Ok(url) = Url::from_file_path(&track.path) {
+                                        self.player.load(url.as_str());
+                                    }
                                 }
                             }
 
@@ -951,33 +957,35 @@ impl cosmic::Application for AppModel {
             }
 
             Message::ListSelectRow(index) => {
-                let playlist = self
-                    .playlists
-                    .iter_mut()
-                    .find(|p| p.id() == self.view_playlist.unwrap_or(0))
-                    .unwrap();
+                let shift_pressed = self.shift_pressed;
+                let control_pressed = self.control_pressed;
+                let list_last_selected_id = self.list_last_selected_id;
 
-                if self.shift_pressed > 0 && self.list_last_selected_id.is_some() {
-                    playlist.select_range(index, self.list_last_selected_id.unwrap());
-                } else {
-                    if self.control_pressed == 0 {
-                        // Clear selected
-                        playlist.clear_selected();
-                    }
-
-                    // Flip selected
-                    let tracks = playlist.tracks();
-                    if tracks[index].selected {
-                        playlist.deselect(index);
+                if let Some(playlist) = self.get_active_playlist_mut() {
+                    if shift_pressed > 0 && list_last_selected_id.is_some() {
+                        playlist.select_range(index, list_last_selected_id.unwrap());
                     } else {
-                        playlist.select(index);
-                    }
-                }
+                        if control_pressed == 0 {
+                            playlist.clear_selected();
+                        }
 
-                if playlist.selected_iter().count() > 0 {
-                    self.list_last_selected_id = Some(index);
-                } else {
-                    self.list_last_selected_id = None;
+                        let should_deselect = {
+                            let tracks = playlist.tracks();
+                            index < tracks.len() && tracks[index].selected
+                        };
+
+                        if should_deselect {
+                            playlist.deselect(index);
+                        } else if index < playlist.tracks().len() {
+                            playlist.select(index);
+                        }
+                    }
+
+                    if playlist.selected_iter().count() > 0 {
+                        self.list_last_selected_id = Some(index);
+                    } else {
+                        self.list_last_selected_id = None;
+                    }
                 }
             }
 
@@ -1180,6 +1188,9 @@ impl cosmic::Application for AppModel {
 
             Message::SearchClear => {
                 self.search_term = None;
+                // Reset viewport state when clearing search
+                self.list_start = 0;
+                self.list_visible_row_count = 0;
                 return scrollable::scroll_to(
                     self.list_scroll_id.clone(),
                     AbsoluteOffset { x: 0.0, y: 0.0 },
@@ -1188,6 +1199,9 @@ impl cosmic::Application for AppModel {
 
             Message::SearchInput(term) => {
                 self.search_term = Some(term);
+                // Reset viewport state when search term changes
+                self.list_start = 0;
+                self.list_visible_row_count = 0;
                 return scrollable::scroll_to(
                     self.list_scroll_id.clone(),
                     AbsoluteOffset { x: 0.0, y: 0.0 },
@@ -1216,6 +1230,8 @@ impl cosmic::Application for AppModel {
             }
 
             Message::Tick => {
+                self.validate_playback_session();
+
                 // Handle GStreamer messages
                 let bus = self.player.playbin.bus().unwrap();
                 while let Some(msg) = bus.pop() {
@@ -1319,38 +1335,7 @@ impl cosmic::Application for AppModel {
                 let shuffle = !self.state.shuffle;
                 state_set!(shuffle, shuffle);
 
-                // If there's an active playback session, recreate it with new shuffle order
-                if let Some(session) = &self.playback_session {
-                    let playlist_id = session.playlist_id;
-                    let current_track_id = session.order[session.index].metadata.id.clone();
-
-                    // Find the playlist
-                    if let Some(playlist) = self.playlists.iter().find(|p| p.id() == playlist_id) {
-                        let mut new_order = playlist.tracks().to_vec();
-
-                        // Apply shuffle if enabled
-                        if shuffle {
-                            new_order.shuffle(&mut rand::rng());
-                        }
-                        // If shuffle is off, new_order is already in original playlist order
-
-                        // Find the current track in the new order
-                        let new_index = new_order
-                            .iter()
-                            .position(|t| {
-                                t.metadata.id.clone().unwrap_or("".into())
-                                    == current_track_id.clone().unwrap_or("".into())
-                            })
-                            .unwrap_or(0);
-
-                        // Update the session with new order
-                        self.playback_session = Some(PlaybackSession {
-                            playlist_id,
-                            order: new_order,
-                            index: new_index,
-                        });
-                    }
-                }
+                self.update_playback_session_with_shuffle(shuffle);
             }
 
             Message::UpdateComplete(library) => {
@@ -1420,6 +1405,7 @@ impl cosmic::Application for AppModel {
                         "mp3".to_string(),
                         "ogg".to_string(),
                         "opus".to_string(),
+                        "wav".to_string(),
                     ];
 
                     // Get paths
@@ -1446,7 +1432,12 @@ impl cosmic::Application for AppModel {
                     }
 
                     // Get metadata
-                    gst::init().unwrap();
+                    if let Err(err) = gst::init() {
+                        eprintln!("Failed to initialize GStreamer: {}", err);
+                        _ = tx.send(Message::UpdateProgress(0.0, 0.0, 0.0));
+                        _ = tx.send(Message::UpdateComplete(library));
+                        return;
+                    }
 
                     let mut update_progress: f32 = 0.0;
                     let update_total: f32 = library.media.len() as f32;
@@ -1762,12 +1753,12 @@ impl AppModel {
     fn track_info_panel(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing { space_xs, .. } = theme::active().cosmic().spacing;
 
-        let active_playlist = self
-            .playlists
-            .iter()
-            .find(|p| p.id() == self.view_playlist.unwrap_or(0));
+        let active_playlist = self.get_active_playlist();
 
-        let tracks = active_playlist.unwrap().selected();
+        let tracks: Vec<&Track> = match active_playlist {
+            Some(playlist) => playlist.selected(),
+            None => vec![],
+        };
         let take = 10;
 
         let mut column = widget::column().spacing(space_xs);
@@ -1782,39 +1773,55 @@ impl AppModel {
                 widget::column()
                     .push(track_info_row(
                         fl!("title"),
-                        t.metadata.title.clone().unwrap(),
+                        t.metadata.title.clone().unwrap_or_default(),
                     ))
                     .push(track_info_row(
                         fl!("album"),
-                        t.metadata.album.clone().unwrap(),
+                        t.metadata.album.clone().unwrap_or_default(),
                     ))
                     .push(track_info_row(
                         fl!("artist"),
-                        t.metadata.artist.clone().unwrap(),
+                        t.metadata.artist.clone().unwrap_or_default(),
                     ))
                     .push(track_info_row(
                         fl!("album-artist"),
-                        t.metadata.album_artist.clone().unwrap(),
+                        t.metadata.album_artist.clone().unwrap_or_default(),
                     ))
                     .push(track_info_row(
                         fl!("genre"),
-                        t.metadata.genre.clone().unwrap(),
+                        t.metadata.genre.clone().unwrap_or_default(),
                     ))
                     .push(track_info_row(
                         fl!("album-disc-number"),
-                        t.metadata.album_disc_number.clone().unwrap().to_string(),
+                        t.metadata
+                            .album_disc_number
+                            .clone()
+                            .unwrap_or_default()
+                            .to_string(),
                     ))
                     .push(track_info_row(
                         fl!("album-disc-count"),
-                        t.metadata.album_disc_count.clone().unwrap().to_string(),
+                        t.metadata
+                            .album_disc_count
+                            .clone()
+                            .unwrap_or_default()
+                            .to_string(),
                     ))
                     .push(track_info_row(
                         fl!("track-number"),
-                        t.metadata.track_number.clone().unwrap().to_string(),
+                        t.metadata
+                            .track_number
+                            .clone()
+                            .unwrap_or_default()
+                            .to_string(),
                     ))
                     .push(track_info_row(
                         fl!("track-count"),
-                        t.metadata.track_count.clone().unwrap().to_string(),
+                        t.metadata
+                            .track_count
+                            .clone()
+                            .unwrap_or_default()
+                            .to_string(),
                     ))
                     .push(track_info_row(fl!("duration"), display_duration))
                     .push(
@@ -2475,6 +2482,110 @@ impl AppModel {
                     })
                 })
                 .unwrap_or(false)
+    }
+
+    /// Safely get the active playlist by ID
+    fn get_active_playlist(&self) -> Option<&Playlist> {
+        self.view_playlist
+            .and_then(|id| self.playlists.iter().find(|p| p.id() == id))
+    }
+
+    /// Safely get a mutable reference to the active playlist by ID
+    fn get_active_playlist_mut(&mut self) -> Option<&mut Playlist> {
+        let id = self.view_playlist?;
+        self.playlists.iter_mut().find(|p| p.id() == id)
+    }
+
+    /// Safely get a playlist by ID
+    fn get_playlist(&self, id: u32) -> Option<&Playlist> {
+        self.playlists.iter().find(|p| p.id() == id)
+    }
+
+    /// Get the currently playing track's ID (if any)
+    fn get_current_playing_id(&self) -> Option<String> {
+        self.playback_session.as_ref().and_then(|session| {
+            session
+                .order
+                .get(session.index)
+                .and_then(|track| track.metadata.id.clone())
+        })
+    }
+
+    /// Update playback session based on shuffle
+    fn update_playback_session_with_shuffle(&mut self, shuffle_enabled: bool) -> bool {
+        let (playlist_id, current_track_id) = match &self.playback_session {
+            Some(session) => (session.playlist_id, self.get_current_playing_id()),
+            None => return false,
+        };
+
+        if let Some(playlist) = self.get_playlist(playlist_id) {
+            let mut new_order = playlist.tracks().to_vec();
+
+            if shuffle_enabled {
+                new_order.shuffle(&mut rand::rng());
+            }
+
+            let new_index = if let Some(ref id) = current_track_id {
+                new_order
+                    .iter()
+                    .position(|t| {
+                        t.metadata
+                            .id
+                            .as_ref()
+                            .map_or(false, |track_id| track_id == id)
+                    })
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+
+            self.playback_session = Some(PlaybackSession {
+                playlist_id,
+                order: new_order,
+                index: new_index,
+            });
+            return true;
+        }
+        false
+    }
+
+    /// Validates and sanitizes the current playback session
+    /// Returns false if session is invalid and should be cleared
+    fn validate_playback_session(&mut self) -> bool {
+        let session_playlist_id = match &self.playback_session {
+            Some(session) => session.playlist_id,
+            None => return true,
+        };
+
+        if self.get_playlist(session_playlist_id).is_none() {
+            self.playback_session = None;
+            self.now_playing = None;
+            return false;
+        }
+
+        if let Some(session) = &mut self.playback_session {
+            // Bounds check
+            if session.index >= session.order.len() {
+                session.index = session.order.len().saturating_sub(1);
+            }
+
+            // Verify metadata validity
+            if let Some(track) = session.order.get(session.index) {
+                if track.metadata.id.is_none() {
+                    // Find next track with valid ID, or reset to 0
+                    session.index = session
+                        .order
+                        .iter()
+                        .skip(session.index)
+                        .position(|t| t.metadata.id.is_some())
+                        .map(|pos| session.index + pos)
+                        .unwrap_or(0);
+                }
+            }
+
+            return true;
+        }
+        true
     }
 }
 
