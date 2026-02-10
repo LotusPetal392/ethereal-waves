@@ -40,6 +40,7 @@ Non-exhaustive list of planned features in no particular order:
 - `PageUp`: Scroll Up
 - `PageDown`: Scroll Down
 - `Ctrl + ,`: Settings
+- `Ctrl + A`: Select All
 - `Ctrl + click`: Select
 - `Ctrl + Shift + click`: Select Range
 

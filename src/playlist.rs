@@ -111,6 +111,12 @@ impl Playlist {
         self.tracks.push(track);
     }
 
+    pub fn select_all(&mut self) {
+        for track in self.tracks.iter_mut() {
+            track.selected = true;
+        }
+    }
+
     pub fn select(&mut self, index: usize) {
         self.tracks[index].selected = true;
     }

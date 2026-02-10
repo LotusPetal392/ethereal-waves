@@ -156,6 +156,8 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
                     menu::Item::Divider,
                     menu::Item::Folder(fl!("add-now-playing-to"), now_playing_playlist_list),
                     menu::Item::Divider,
+                    menu::Item::Button(fl!("select-all"), None, MenuAction::SelectAll),
+                    menu::Item::Divider,
                     if has_playlist {
                         menu::Item::Button(fl!("move-up"), None, MenuAction::MoveNavUp)
                     } else {

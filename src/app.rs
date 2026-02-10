@@ -170,6 +170,7 @@ pub enum Message {
     SearchActivate,
     SearchClear,
     SearchInput(String),
+    SelectAll,
     SelectedPaths(Vec<String>),
     SetVolume(i32),
     SliderSeek(f32),
@@ -1205,6 +1206,12 @@ impl cosmic::Application for AppModel {
                     self.list_scroll_id.clone(),
                     AbsoluteOffset { x: 0.0, y: 0.0 },
                 );
+            }
+
+            Message::SelectAll => {
+                if let Some(playlist) = self.get_active_playlist_mut() {
+                    playlist.select_all();
+                }
             }
 
             // Add selected paths from the Open dialog
@@ -2642,6 +2649,7 @@ pub enum MenuAction {
     NewPlaylist,
     Quit,
     RenamePlaylist,
+    SelectAll,
     Settings,
     ToggleRepeat,
     ToggleRepeatMode,
@@ -2667,6 +2675,7 @@ impl menu::action::MenuAction for MenuAction {
             MenuAction::NewPlaylist => Message::NewPlaylist,
             MenuAction::RenamePlaylist => Message::RenamePlaylist,
             MenuAction::Quit => Message::Quit,
+            MenuAction::SelectAll => Message::SelectAll,
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
             MenuAction::ToggleRepeat => Message::ToggleRepeat,
             MenuAction::ToggleRepeatMode => Message::ToggleRepeatMode,

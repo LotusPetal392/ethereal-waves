@@ -40,6 +40,7 @@ playback = Playback
 repeat-one = Repeat One
 repeat-all = Repeat All
 add-now-playing-to = Add Now Playing to
+select-all = Select All
 
 previous = Previous
 play = Play
