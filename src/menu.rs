@@ -19,48 +19,75 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
         false
     };
 
-    let selected_playlist = app
-        .playlists
-        .iter()
-        .find(|p| p.id() == app.view_playlist.unwrap())
-        .unwrap();
+    let selected_playlist = match app.view_playlist {
+        Some(id) => match app.playlist_service.get(id) {
+            Ok(playlist) => playlist,
+            Err(_) => {
+                // If we can't get the playlist, return a minimal menu
+                return menu::bar(vec![menu::Tree::with_children(
+                    menu::root(fl!("file")).apply(Element::from),
+                    menu::items(
+                        &app.key_binds,
+                        vec![menu::Item::Button(fl!("quit"), None, MenuAction::Quit)],
+                    ),
+                )])
+                .item_width(menu::ItemWidth::Uniform(250))
+                .item_height(menu::ItemHeight::Dynamic(40))
+                .spacing(1.0)
+                .width(Length::Fill)
+                .into();
+            }
+        },
+        None => {
+            // No playlist selected, return a minimal menu
+            return menu::bar(vec![menu::Tree::with_children(
+                menu::root(fl!("file")).apply(Element::from),
+                menu::items(
+                    &app.key_binds,
+                    vec![menu::Item::Button(fl!("quit"), None, MenuAction::Quit)],
+                ),
+            )])
+            .item_width(menu::ItemWidth::Uniform(250))
+            .item_height(menu::ItemHeight::Dynamic(40))
+            .spacing(1.0)
+            .width(Length::Fill)
+            .into();
+        }
+    };
 
     let mut selected_playlist_list = Vec::new();
     let mut now_playing_playlist_list = Vec::new();
 
     let selected_count: usize = if app.view_playlist.is_some() {
-        app.playlists
-            .iter()
-            .find(|p| p.id() == app.view_playlist.unwrap())
-            .unwrap()
-            .selected_iter()
-            .count()
+        app.playlist_service
+            .get(app.view_playlist.unwrap())
+            .map(|p| p.selected_iter().count())
+            .unwrap_or(0)
     } else {
         0
     };
 
     // Add ordered playlists
     app.state.playlist_nav_order.iter().for_each(|p| {
-        let playlist = app.playlists.iter().find(|playlist| playlist.id() == *p);
-        if playlist.is_some() {
+        if let Ok(playlist) = app.playlist_service.get(*p) {
             selected_playlist_list.push(menu::Item::Button(
-                playlist.unwrap().name().to_string(),
+                playlist.name().to_string(),
                 None,
-                MenuAction::AddSelectedToPlaylist(playlist.unwrap().id()),
+                MenuAction::AddSelectedToPlaylist(playlist.id()),
             ));
             if app.now_playing.is_some() {
                 now_playing_playlist_list.push(menu::Item::Button(
-                    playlist.unwrap().name().to_string(),
+                    playlist.name().to_string(),
                     None,
-                    MenuAction::AddNowPlayingToPlaylist(playlist.unwrap().id()),
+                    MenuAction::AddNowPlayingToPlaylist(playlist.id()),
                 ));
             }
         }
     });
     // Add unordered playlists
-    app.playlists
-        .iter()
-        .filter(|p| !p.is_library() && !app.state.playlist_nav_order.contains(&p.id()))
+    app.playlist_service
+        .user_playlists()
+        .filter(|p| !app.state.playlist_nav_order.contains(&p.id()))
         .for_each(|p| {
             selected_playlist_list.push(menu::Item::Button(
                 p.name().to_string(),

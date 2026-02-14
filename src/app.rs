@@ -14,6 +14,7 @@ use crate::page::list_view;
 use crate::page::loading;
 use crate::player::Player;
 use crate::playlist::{Playlist, Track};
+use crate::services::playlist_service::PlaylistService;
 use cosmic::iced_widget::scrollable::{self, AbsoluteOffset};
 use cosmic::prelude::*;
 use cosmic::{
@@ -67,6 +68,8 @@ const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const APP_ICON: &[u8] = include_bytes!(
     "../resources/icons/hicolor/scalable/apps/com.github.LotusPetal392.ethereal-waves.svg"
 );
+
+pub type PlaylistId = u32;
 
 /// The application model stores app-specific state used to describe its interface and
 /// drive its logic.
@@ -123,7 +126,6 @@ pub struct AppModel {
     control_pressed: u8,
     shift_pressed: u8,
 
-    pub playlists: Vec<Playlist>,
     pub view_playlist: Option<u32>,
     pub playback_session: Option<PlaybackSession>,
 
@@ -134,14 +136,16 @@ pub struct AppModel {
     pub playback_status: PlaybackStatus,
 
     pub image_store: ImageStore,
+
+    pub playlist_service: PlaylistService,
 }
 
 /// Messages emitted by the application and its widgets.
 #[derive(Debug, Clone)]
 pub enum Message {
     AddLibraryDialog,
-    AddSelectedToPlaylist(u32),
-    AddNowPlayingToPlaylist(u32),
+    AddSelectedToPlaylist(PlaylistId),
+    AddNowPlayingToPlaylist(PlaylistId),
     AppTheme(AppTheme),
     ChangeTrack(String, usize),
     DeletePlaylist,
@@ -299,7 +303,7 @@ impl cosmic::Application for AppModel {
             config_handler: _flags.config_handler,
             state_handler: _flags.state_handler,
             state: _flags.state.clone(),
-            app_xdg_dirs: app_xdg_dirs,
+            app_xdg_dirs: app_xdg_dirs.clone(),
             initial_load_complete: false,
             library: Library::new(),
             is_updating: false,
@@ -321,7 +325,6 @@ impl cosmic::Application for AppModel {
             list_last_selected_id: None,
             control_pressed: 0,
             shift_pressed: 0,
-            playlists: Vec::new(),
             view_playlist: None,
             playback_session: None,
             search_id: widget::Id::new("Text Search"),
@@ -329,6 +332,7 @@ impl cosmic::Application for AppModel {
             mpris_rx,
             playback_status: PlaybackStatus::Stopped,
             image_store: ImageStore::new(artwork_dir.clone()),
+            playlist_service: PlaylistService::new(Arc::new(app_xdg_dirs.clone())),
         };
 
         // Create a startup command that sets the window title.
@@ -409,10 +413,7 @@ impl cosmic::Application for AppModel {
             return loading::content().into();
         }
 
-        let playlist = self
-            .playlists
-            .iter()
-            .find(|p| Some(p.id()) == self.view_playlist);
+        let playlist = self.playlist_service.get(self.view_playlist.unwrap()).ok();
 
         let content: Column<_> = match playlist {
             Some(p) if p.is_library() && p.tracks().is_empty() => empty_library::content(),
@@ -494,7 +495,7 @@ impl cosmic::Application for AppModel {
             }
 
             DialogPage::DeletePlaylist(id) => {
-                let playlist = self.playlists.iter().find(|p| p.id() == *id);
+                let playlist = self.playlist_service.get(*id).ok();
 
                 let dialog = widget::dialog()
                     .title(fl!("delete-playlist"))
@@ -514,9 +515,9 @@ impl cosmic::Application for AppModel {
 
             DialogPage::DeleteSelectedFromPlaylist => {
                 let view_playlist = self
-                    .playlists
-                    .iter()
-                    .find(|p| Some(p.id()) == self.view_playlist)
+                    .playlist_service
+                    .get(self.view_playlist.unwrap())
+                    .ok()
                     .unwrap();
 
                 let dialog = widget::dialog()
@@ -669,64 +670,52 @@ impl cosmic::Application for AppModel {
             }
 
             Message::AddSelectedToPlaylist(destination_id) => {
-                let Some(source_id) = self.view_playlist else {
-                    return Task::none();
+                let source_id = match self.view_playlist {
+                    Some(id) => id,
+                    None => return Task::none(),
                 };
 
-                let Some(source_index) = self.playlists.iter().position(|p| p.id() == source_id)
-                else {
-                    eprintln!("Source playlist not found");
-                    return Task::none();
+                // Get selected tracks from source playlist
+                let selected_tracks: Vec<Track> = match self.playlist_service.get(source_id) {
+                    Ok(playlist) => playlist
+                        .selected()
+                        .iter()
+                        .map(|t| {
+                            let mut track = (*t).clone();
+                            track.selected = false;
+                            track
+                        })
+                        .collect(),
+                    Err(_) => return Task::none(),
                 };
 
-                let Some(destination_index) =
-                    self.playlists.iter().position(|p| p.id() == destination_id)
-                else {
-                    eprintln!("Destination playlist not found");
-                    return Task::none();
-                };
-
-                if source_index == destination_index {
-                    return Task::none();
+                if let Err(err) = self
+                    .playlist_service
+                    .add_tracks(destination_id, selected_tracks)
+                {
+                    eprintln!("Error adding tracks: {}", err);
                 }
-
-                let (source, destination) = if source_index < destination_index {
-                    let (left, right) = self.playlists.split_at_mut(destination_index);
-                    (&mut left[source_index], &mut right[0])
-                } else {
-                    let (left, right) = self.playlists.split_at_mut(source_index);
-                    (&mut right[0], &mut left[destination_index])
-                };
-
-                for track in source.selected().clone() {
-                    let mut track = track.clone();
-                    track.selected = false;
-                    destination.push(track);
-                }
-
-                let _ = self.save_playlists(Some(destination_id));
             }
 
             Message::AddNowPlayingToPlaylist(destination_id) => {
-                let destination = self
-                    .playlists
-                    .iter_mut()
-                    .find(|p| p.id() == destination_id)
-                    .unwrap();
-
                 if let Some(now_playing) = self.now_playing.clone() {
-                    let now_playing_data = self
-                        .library
-                        .from_id(&now_playing.id.unwrap_or("".to_string()))
-                        .unwrap();
-                    destination.push(Track {
-                        path: now_playing_data.0.clone(),
-                        metadata: now_playing_data.1.clone(),
-                        ..Default::default()
-                    });
-                }
+                    if let Some(now_playing_data) =
+                        self.library.from_id(&now_playing.id.unwrap_or_default())
+                    {
+                        let track = Track {
+                            path: now_playing_data.0.clone(),
+                            metadata: now_playing_data.1.clone(),
+                            ..Default::default()
+                        };
 
-                let _ = self.save_playlists(Some(destination_id));
+                        if let Err(err) = self
+                            .playlist_service
+                            .add_tracks(destination_id, vec![track])
+                        {
+                            eprintln!("Error adding now playing to playlist: {}", err);
+                        }
+                    }
+                }
             }
 
             Message::ChangeTrack(id, index) => {
@@ -771,9 +760,9 @@ impl cosmic::Application for AppModel {
                             let view_playlist_id = self.view_playlist;
 
                             let clicked_track_id = self
-                                .playlists
-                                .iter()
-                                .find(|p| p.id() == view_playlist_id.unwrap_or(0))
+                                .playlist_service
+                                .get(view_playlist_id.unwrap_or(0))
+                                .ok()
                                 .and_then(|playlist| {
                                     if index < playlist.tracks().len() {
                                         playlist.tracks()[index].metadata.id.clone()
@@ -820,54 +809,46 @@ impl cosmic::Application for AppModel {
                 if let Some(dialog_page) = self.dialog_pages.pop_front() {
                     match dialog_page {
                         DialogPage::NewPlaylist(name) => {
-                            let playlist = Playlist::new(name);
-                            self.playlists.push(playlist.clone());
-
-                            let divider = self.playlists.len() == 2;
-                            let playlist_id = playlist.id();
-
-                            self.nav
-                                .insert()
-                                .text(playlist.name().to_string())
-                                .icon(widget::icon::from_name("playlist-symbolic"))
-                                .data(Page::Playlist(playlist.id()))
-                                .divider_above(divider);
-
-                            let _ = self.save_playlists(Some(playlist_id));
+                            match self.playlist_service.create(name) {
+                                Ok(id) => {
+                                    // Rebuild nav with new playlist
+                                    self.view_playlist = Some(id);
+                                }
+                                Err(err) => {
+                                    eprintln!("Error creating playlist: {}", err);
+                                }
+                            }
                         }
 
                         DialogPage::RenamePlaylist { id, name } => {
-                            // Update playlist
-                            if let Some(playlist) = self.playlists.iter_mut().find(|p| p.id() == id)
-                            {
-                                playlist.set_name(name.clone());
+                            match self.playlist_service.rename(id, name) {
+                                Ok(_) => {
+                                    self.view_playlist = Some(id);
+                                }
+                                Err(err) => {
+                                    eprintln!("Error renaming playlist: {}", err);
+                                }
                             }
-
-                            // Update nav text
-                            let entity = self.nav.iter().find(|&e| {
-                                self.nav.data::<Page>(e).map_or(false, |page| match page {
-                                    Page::Playlist(playlist_id) => *playlist_id == id,
-                                })
-                            });
-
-                            if let Some(entity) = entity {
-                                self.nav.text_set(entity, name);
-                            }
-
-                            let _ = self.save_playlists(Some(id));
                         }
 
                         DialogPage::DeletePlaylist(id) => {
-                            let _ = self.delete_playlist(id);
+                            match self.playlist_service.delete(id) {
+                                Ok(_) => {
+                                    // Switch to library view
+                                    if let Ok(library) = self.playlist_service.get_library() {
+                                        self.view_playlist = Some(library.id());
+                                    }
+                                }
+                                Err(err) => {
+                                    eprintln!("Error deleting playlist: {}", err);
+                                }
+                            }
                         }
 
                         DialogPage::DeleteSelectedFromPlaylist => {
-                            if let Some(id) = self.view_playlist {
-                                if let Some(p) = self.playlists.iter_mut().find(|p| p.id() == id) {
-                                    p.remove_selected();
-                                }
-                                let _ = self.save_playlists(Some(id));
-                            }
+                            self.playlist_service
+                                .remove_selected(self.view_playlist.unwrap())
+                                .ok();
                         }
                     };
                 };
@@ -957,35 +938,38 @@ impl cosmic::Application for AppModel {
             }
 
             Message::ListSelectRow(index) => {
-                let shift_pressed = self.shift_pressed;
-                let control_pressed = self.control_pressed;
-                let list_last_selected_id = self.list_last_selected_id;
+                let Some(playlist_id) = self.view_playlist else {
+                    return Task::none();
+                };
 
-                if let Some(playlist) = self.get_active_playlist_mut() {
-                    if shift_pressed > 0 && list_last_selected_id.is_some() {
-                        playlist.select_range(index, list_last_selected_id.unwrap());
+                if self.control_pressed > 0 {
+                    // Ctrl + Click: toggle selection
+                    let Ok(playlist) = self.playlist_service.get(playlist_id) else {
+                        return Task::none();
+                    };
+
+                    if playlist.tracks().get(index).map_or(false, |t| t.selected) {
+                        let _ = self.playlist_service.deselect_track(playlist_id, index);
                     } else {
-                        if control_pressed == 0 {
-                            playlist.clear_selected();
-                        }
-
-                        let should_deselect = {
-                            let tracks = playlist.tracks();
-                            index < tracks.len() && tracks[index].selected
-                        };
-
-                        if should_deselect {
-                            playlist.deselect(index);
-                        } else if index < playlist.tracks().len() {
-                            playlist.select(index);
-                        }
+                        let _ = self.playlist_service.select_track(playlist_id, index);
                     }
 
-                    if playlist.selected_iter().count() > 0 {
-                        self.list_last_selected_id = Some(index);
-                    } else {
-                        self.list_last_selected_id = None;
+                    self.list_last_selected_id = Some(index);
+                } else if self.control_pressed > 0 && self.shift_pressed > 0 {
+                    // Ctrl + Shift + Click: select range
+                    if let Some(last_id) = self.list_last_selected_id {
+                        let _ = self
+                            .playlist_service
+                            .select_range(playlist_id, last_id, index);
                     }
+                } else {
+                    // Click: clear all and select one
+                    let _ = self.playlist_service.clear_selection(playlist_id);
+                    let _ = self.playlist_service.select_track(playlist_id, index);
+
+                    // TODO: Handle double click for playback
+
+                    self.list_last_selected_id = Some(index);
                 }
             }
 
@@ -1012,7 +996,7 @@ impl cosmic::Application for AppModel {
                 // Clamp to valid range
                 let tracks_len = self
                     .view_playlist
-                    .and_then(|id| self.playlists.iter().find(|p| p.id() == id))
+                    .and_then(|id| self.playlist_service.get(id).ok())
                     .map(|p| p.len())
                     .unwrap_or(0);
 
@@ -1033,9 +1017,13 @@ impl cosmic::Application for AppModel {
                 state_set!(sort_by, new_sort_by.clone());
                 state_set!(sort_direction, new_direction.clone());
 
-                if let Some(view_id) = self.view_playlist {
-                    if let Some(i) = self.playlists.iter().position(|p| p.id() == view_id) {
-                        self.playlists[i].sort(new_sort_by, new_direction);
+                // Sort ALL playlists (including library)
+                let playlist_ids: Vec<u32> =
+                    self.playlist_service.all().iter().map(|p| p.id()).collect();
+
+                for id in playlist_ids {
+                    if let Ok(playlist) = self.playlist_service.get_mut(id) {
+                        playlist.sort(new_sort_by.clone(), new_direction.clone());
                     }
                 }
             }
@@ -1059,21 +1047,15 @@ impl cosmic::Application for AppModel {
             // Kick off the Rename Playlist dialog
             Message::RenamePlaylist => match self.nav.data(self.nav.active()) {
                 Some(Page::Playlist(id)) => {
-                    if self
-                        .playlists
-                        .iter()
-                        .find(|p| p.id() == *id && !p.is_library())
-                        .is_some()
-                    {
-                        let name = self.nav.text(self.nav.active()).unwrap_or("");
-                        self.dialog_pages.push_back(DialogPage::RenamePlaylist {
-                            id: *id,
-                            name: name.into(),
-                        });
-                        return widget::text_input::focus(widget::Id::new(
-                            RENAME_PLAYLIST_INPUT_ID,
-                        ));
+                    if self.playlist_service.get(*id).ok().unwrap().is_library() {
+                        return Task::none();
                     }
+                    let name = self.nav.text(self.nav.active()).unwrap_or("");
+                    self.dialog_pages.push_back(DialogPage::RenamePlaylist {
+                        id: *id,
+                        name: name.into(),
+                    });
+                    return widget::text_input::focus(widget::Id::new(RENAME_PLAYLIST_INPUT_ID));
                 }
                 _ => {}
             },
@@ -1081,7 +1063,7 @@ impl cosmic::Application for AppModel {
             // Kick off the delete playlist dialog
             Message::DeletePlaylist => {
                 if let Some(Page::Playlist(id)) = self.nav.data(self.nav.active()) {
-                    if let Some(p) = self.playlists.iter().find(|p| p.id() == *id) {
+                    if let Some(p) = self.playlist_service.get(*id).ok() {
                         if !p.is_library() {
                             self.dialog_pages.push_back(DialogPage::DeletePlaylist(*id));
                         }
@@ -1110,10 +1092,10 @@ impl cosmic::Application for AppModel {
                 let _ = self.library.save(&self.app_xdg_dirs);
 
                 // Update the library playlist with new data
-                if let Some(lib_playlist) = self.playlists.iter_mut().find(|p| p.is_library()) {
+                if let Ok(lib_playlist) = self.playlist_service.get_library_mut() {
                     let library_id = lib_playlist.id();
 
-                    lib_playlist.clear(); // Clear existing tracks
+                    lib_playlist.clear();
                     for (path, metadata) in &self.library.media {
                         let mut track = Track::new();
                         track.path = path.clone();
@@ -1181,8 +1163,14 @@ impl cosmic::Application for AppModel {
             }
 
             Message::RemoveSelectedFromPlaylist => {
-                self.dialog_pages
-                    .push_back(DialogPage::DeleteSelectedFromPlaylist);
+                let playlist_id = match self.view_playlist {
+                    Some(id) => id,
+                    None => return Task::none(),
+                };
+
+                if let Err(err) = self.playlist_service.remove_selected(playlist_id) {
+                    eprintln!("Error removing tracks: {}", err);
+                }
             }
 
             Message::SearchActivate => {
@@ -1213,8 +1201,10 @@ impl cosmic::Application for AppModel {
             }
 
             Message::SelectAll => {
-                if let Some(playlist) = self.get_active_playlist_mut() {
-                    playlist.select_all();
+                if let Some(playlist_id) = self.view_playlist {
+                    if let Err(err) = self.playlist_service.select_all(playlist_id) {
+                        eprintln!("Error selecting all tracks: {}", err);
+                    }
                 }
             }
 
@@ -1357,10 +1347,10 @@ impl cosmic::Application for AppModel {
                 self.is_updating = false;
 
                 // Update the library playlist with new data
-                if let Some(lib_playlist) = self.playlists.iter_mut().find(|p| p.is_library()) {
+                if let Ok(lib_playlist) = self.playlist_service.get_library_mut() {
                     let library_id = lib_playlist.id();
 
-                    lib_playlist.clear(); // Clear existing tracks
+                    lib_playlist.clear();
                     for (path, metadata) in &self.library.media {
                         let mut track = Track::new();
                         track.path = path.clone();
@@ -1894,37 +1884,40 @@ impl AppModel {
     }
 
     /// Load library and playlists
+    // Decide nav order
     pub fn load_data(&mut self) -> Task<cosmic::Action<Message>> {
-        // Load library
-        let media: HashMap<PathBuf, MediaMetaData> =
-            match AppModel::load_library(&self.app_xdg_dirs) {
-                Ok(media) => media,
-                Err(err) => {
-                    eprintln!("Failed to load library: {err}");
-                    HashMap::new()
-                }
-            };
-        self.library.media = media;
+        // Load library from disk
+        let library_media = Self::load_library(&self.app_xdg_dirs).unwrap_or_default();
+        self.library.media = library_media.clone();
 
-        // Setup library playlist
-        let mut library_playlist = Playlist::library();
-        for (path, metadata) in &self.library.media {
-            let mut track = Track::new();
-            track.path = path.clone();
-            track.metadata = metadata.clone();
+        // Convert library to tracks
+        let library_tracks: Vec<Track> = library_media
+            .iter()
+            .map(|(path, metadata)| {
+                let mut track = Track::new();
+                track.path = path.clone();
+                track.metadata = metadata.clone();
+                track
+            })
+            .collect();
 
-            library_playlist.push(track);
+        // Load all playlists through the service
+        if let Err(e) = self.playlist_service.load_all(library_tracks) {
+            eprintln!("Error loading playlists: {}", e);
+            self.initial_load_complete = false;
+            return Task::none();
         }
 
-        library_playlist.sort(
-            self.state.sort_by.clone(),
-            self.state.sort_direction.clone(),
-        );
+        let playlist_ids: Vec<u32> = self.playlist_service.all().iter().map(|p| p.id()).collect();
 
-        // Load user playlists
-        let mut playlists = vec![library_playlist];
-        playlists.extend(self.load_playlists().unwrap_or_default());
-        self.playlists = playlists;
+        for id in playlist_ids {
+            if let Ok(playlist) = self.playlist_service.get_mut(id) {
+                playlist.sort(
+                    self.state.sort_by.clone(),
+                    self.state.sort_direction.clone(),
+                );
+            }
+        }
 
         // Decide nav order
         let items: Vec<NavPlaylistItem> = if !self.state.playlist_nav_order.is_empty() {
@@ -1934,9 +1927,9 @@ impl AppModel {
                 .playlist_nav_order
                 .iter()
                 .filter_map(|pid| {
-                    self.playlists
-                        .iter()
-                        .find(|p| p.id() == *pid)
+                    self.playlist_service
+                        .get(*pid)
+                        .ok()
                         .map(|p| NavPlaylistItem {
                             id: *pid,
                             name: p.name().to_string(),
@@ -1944,9 +1937,9 @@ impl AppModel {
                 })
                 .collect();
 
-            // Add any playlists that aren't in the saves order
+            // Add any playlists that aren't in the saved order
             let ordered_ids: HashSet<_> = ordered_items.iter().map(|item| item.id).collect();
-            for playlist in self.playlists.iter().filter(|p| !p.is_library()) {
+            for playlist in self.playlist_service.user_playlists() {
                 if !ordered_ids.contains(&playlist.id()) {
                     ordered_items.push(NavPlaylistItem {
                         id: playlist.id(),
@@ -1957,9 +1950,8 @@ impl AppModel {
 
             ordered_items
         } else {
-            self.playlists
-                .iter()
-                .filter(|p| !p.is_library())
+            self.playlist_service
+                .user_playlists()
                 .map(|p| NavPlaylistItem {
                     id: p.id(),
                     name: p.name().to_string(),
@@ -1968,15 +1960,17 @@ impl AppModel {
         };
 
         // Decide what should be active
-        let active_id = self
-            .view_playlist
-            .or_else(|| {
-                self.playlists
-                    .iter()
-                    .find(|p| p.is_library())
-                    .map(|p| p.id())
-            })
-            .unwrap();
+        let active_id = match self.view_playlist {
+            Some(id) => id,
+            None => match self.playlist_service.get_library() {
+                Ok(lib) => lib.id(),
+                Err(e) => {
+                    eprintln!("Failed to get library playlist: {}", e);
+                    self.initial_load_complete = false; // Stay in loading state
+                    return Task::none();
+                }
+            },
+        };
 
         // Rebuild nav once
         self.rebuild_nav_from_order(items, active_id);
@@ -2035,7 +2029,7 @@ impl AppModel {
             let filename = format!("{}.json", id.unwrap());
             let file_path = playlist_path.join(&filename);
 
-            if let Some(playlist) = self.playlists.iter().find(|p| p.id() == id.unwrap()) {
+            if let Some(playlist) = self.playlist_service.get(id.unwrap()).ok() {
                 let json_data =
                     serde_json::to_string(playlist).expect("Failed to serialize playlist");
                 let mut file = File::create(file_path).expect("Failed to create playlist file");
@@ -2047,68 +2041,12 @@ impl AppModel {
         Ok(())
     }
 
-    /// Delete playlist from filesystem, playlists, and nav area
-    pub fn delete_playlist(&mut self, id: u32) -> anyhow::Result<()> {
-        // Delete from filesystem
-        let playlist = self.playlists.iter().find(|p| p.id() == id);
-        let filename = format!("{}.json", playlist.unwrap().id());
-        let mut file_path = self.app_xdg_dirs.create_data_directory("playlists")?;
-        file_path = file_path.join(filename);
-
-        fs::remove_file(file_path)?;
-
-        // Delete from nav
-        let ids: Vec<_> = self.nav.iter().collect();
-
-        if let Some(entity) = ids.iter().copied().find(|e| {
-            self.nav
-                .data::<Page>(*e)
-                .and_then(|p| match p {
-                    Page::Playlist(pid) => self
-                        .playlists
-                        .iter()
-                        .find(|pl| pl.id() == *pid && pl.is_library()),
-                })
-                .is_some()
-        }) {
-            self.nav.activate(entity);
-            self.view_playlist = self
-                .nav
-                .data::<Page>(entity)
-                .map_or(None, |page| match page {
-                    Page::Playlist(playlist_id) => Some(*playlist_id),
-                });
-        }
-
-        if let Some(entity) = ids.iter().copied().find(|e| {
-            self.nav.data::<Page>(*e).map_or(false, |p| match p {
-                Page::Playlist(pid) => *pid == id,
-            })
-        }) {
-            self.nav.remove(entity);
-        }
-
-        // Remove from playlists
-        self.playlists.retain(|p| p.id() != id);
-
-        // Remove from playlist_nav_order (fixes menu issue!)
-        self.state.playlist_nav_order.retain(|&pid| pid != id);
-
-        // Save the updated state so it persists
-        if let Some(state_handler) = &self.state_handler {
-            let _ = self
-                .state
-                .set_playlist_nav_order(&state_handler, self.state.playlist_nav_order.clone());
-        }
-
-        Ok(())
-    }
-
     fn rebuild_nav_from_order(&mut self, items: Vec<NavPlaylistItem>, activate_id: u32) {
         self.nav.clear();
 
         // Add the library first
-        let library_id = self.playlists.iter().find(|p| p.is_library()).unwrap().id();
+        let library_id = self.playlist_service.get_library().map(|p| p.id()).unwrap();
+
         self.nav
             .insert()
             .text(fl!("library"))
@@ -2117,9 +2055,9 @@ impl AppModel {
 
         // Add the playlists
         for (i, item) in items.iter().enumerate() {
-            let Some(_) = self.playlists.iter().find(|p| p.id() == item.id) else {
+            if self.playlist_service.get(item.id).is_err() {
                 continue;
-            };
+            }
 
             self.nav
                 .insert()
@@ -2153,11 +2091,10 @@ impl AppModel {
             return;
         };
 
-        let active_playlist = self
-            .playlists
-            .iter()
-            .find(|p| p.id() == *active_id)
-            .unwrap();
+        let active_playlist = match self.playlist_service.get(*active_id) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
 
         if active_playlist.is_library() {
             return;
@@ -2169,9 +2106,10 @@ impl AppModel {
             .filter_map(|nav_id| {
                 self.nav.data::<Page>(nav_id).and_then(|p| match p {
                     Page::Playlist(pid) => self
-                        .playlists
-                        .iter()
-                        .find(|pl| pl.id() == *pid && !pl.is_library())
+                        .playlist_service
+                        .get(*pid)
+                        .ok()
+                        .filter(|pl| !pl.is_library())
                         .map(|pl| NavPlaylistItem {
                             id: *pid,
                             name: pl.name().to_string(),
@@ -2199,9 +2137,10 @@ impl AppModel {
             .filter_map(|id| {
                 self.nav.data::<Page>(id).and_then(|page| match page {
                     Page::Playlist(pid) => self
-                        .playlists
-                        .iter()
-                        .find(|p| p.id() == *pid && !p.is_library())
+                        .playlist_service
+                        .get(*pid)
+                        .ok()
+                        .filter(|p| !p.is_library())
                         .map(|_| *pid),
                 })
             })
@@ -2360,10 +2299,9 @@ impl AppModel {
 
     fn play_track_from_view_playlist(&mut self, clicked_index: usize) -> PlaybackSession {
         let playlist = self
-            .playlists
-            .iter()
-            .find(|p| p.id() == self.view_playlist.unwrap_or(0))
-            .unwrap();
+            .playlist_service
+            .get(self.view_playlist.unwrap_or(0))
+            .expect("Failed to get playlist");
 
         let mut order = playlist.tracks().to_vec();
 
@@ -2399,10 +2337,7 @@ impl AppModel {
     }
 
     pub fn calculate_list_view(&self) -> Option<ListViewModel> {
-        let active_playlist = self
-            .playlists
-            .iter()
-            .find(|p| Some(p.id()) == self.view_playlist)?;
+        let active_playlist = self.playlist_service.get(self.view_playlist?).ok()?;
 
         let search = self.search_term.as_deref().unwrap_or("").to_lowercase();
 
@@ -2514,18 +2449,18 @@ impl AppModel {
     /// Safely get the active playlist by ID
     fn get_active_playlist(&self) -> Option<&Playlist> {
         self.view_playlist
-            .and_then(|id| self.playlists.iter().find(|p| p.id() == id))
+            .and_then(|id| self.playlist_service.get(id).ok())
     }
 
     /// Safely get a mutable reference to the active playlist by ID
     fn get_active_playlist_mut(&mut self) -> Option<&mut Playlist> {
         let id = self.view_playlist?;
-        self.playlists.iter_mut().find(|p| p.id() == id)
+        self.playlist_service.get_mut(id).ok()
     }
 
     /// Safely get a playlist by ID
     fn get_playlist(&self, id: u32) -> Option<&Playlist> {
-        self.playlists.iter().find(|p| p.id() == id)
+        self.playlist_service.get(id).ok()
     }
 
     /// Get the currently playing track's ID (if any)
@@ -2630,7 +2565,7 @@ impl AppModel {
             return;
         }
 
-        let Some(lib_playlist) = self.playlists.iter().find(|p| p.id() == library_id) else {
+        let Some(lib_playlist) = self.playlist_service.get_library().ok() else {
             return;
         };
 
@@ -2726,8 +2661,8 @@ pub enum ContextPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MenuAction {
     About,
-    AddSelectedToPlaylist(u32),
-    AddNowPlayingToPlaylist(u32),
+    AddSelectedToPlaylist(PlaylistId),
+    AddNowPlayingToPlaylist(PlaylistId),
     RemoveSelectedFromPlaylist,
     DeletePlaylist,
     MoveNavDown,

@@ -12,6 +12,7 @@ mod mpris;
 mod page;
 mod player;
 mod playlist;
+mod services;
 
 use app::Flags;
 use config::{Config, State};
