@@ -8,7 +8,7 @@ pub const MAX_SIZE_MULTIPLIER: f32 = 30.0;
 pub const ZOOM_STEP: f32 = 2.0;
 
 /// UI Display Constants
-pub const LIST_PREVIEW_ITEMS: usize = 10; // Number shown in info panel
+pub const TRACK_INFO_LIST_TOTAL: usize = 10;
 pub const SEARCH_INPUT_WIDTH: f32 = 240.0;
 
 /// File System Constants

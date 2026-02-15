@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::app::PlaybackStatus;
+use crate::playback_state::PlaybackStatus;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::interface;

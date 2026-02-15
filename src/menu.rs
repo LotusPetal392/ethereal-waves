@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::app::{AppModel, MenuAction, Message, RepeatMode};
+use crate::app::{AppModel, MenuAction, Message};
 use crate::fl;
+use crate::playback_state::RepeatMode;
 use cosmic::{Apply, Element, iced::Length, widget::menu};
 
 pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
@@ -75,7 +76,7 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
                 None,
                 MenuAction::AddSelectedToPlaylist(playlist.id()),
             ));
-            if app.now_playing.is_some() {
+            if app.playback_service.now_playing().is_some() {
                 now_playing_playlist_list.push(menu::Item::Button(
                     playlist.name().to_string(),
                     None,
@@ -94,7 +95,7 @@ pub fn menu_bar<'a>(app: &AppModel) -> Element<'a, Message> {
                 None,
                 MenuAction::AddSelectedToPlaylist(p.id()),
             ));
-            if app.now_playing.is_some() {
+            if app.playback_service.now_playing().is_some() {
                 now_playing_playlist_list.push(menu::Item::Button(
                     p.name().to_string(),
                     None,

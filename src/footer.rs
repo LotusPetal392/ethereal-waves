@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::app::PlaybackStatus;
 use crate::app::{AppModel, Message};
 use crate::fl;
 use crate::helpers::*;
 use crate::library::MediaMetaData;
+use crate::playback_state::PlaybackStatus;
 use cosmic::widget::tooltip::Position;
 use cosmic::{
     Element, cosmic_theme,
@@ -28,7 +28,11 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
 
     let progress_bar_height = Length::Fixed(4.0);
     let artwork_size = 85;
-    let now_playing = app.now_playing.clone().unwrap_or(MediaMetaData::new());
+    let now_playing = if app.playback_service.now_playing().is_some() {
+        app.playback_service.now_playing().unwrap()
+    } else {
+        &MediaMetaData::new()
+    };
 
     // Main content container
     let mut content = widget::column().padding(space_xs);
@@ -50,7 +54,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
 
     let mut handle: Option<Arc<Handle>> = None;
 
-    if let Some(now_playing) = &app.now_playing {
+    if let Some(now_playing) = &app.playback_service.now_playing() {
         if let Some(artwork_filename) = &now_playing.artwork_filename {
             app.image_store.request(artwork_filename.clone());
             handle = app.image_store.get(&artwork_filename.clone());
@@ -81,10 +85,10 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
         });
 
     let mut now_playing_text = widget::column();
-    if app.now_playing.is_some() {
+    if app.playback_service.now_playing().is_some() {
         now_playing_text = now_playing_text
             .push(
-                widget::text(now_playing.title.unwrap_or(String::new()))
+                widget::text(now_playing.clone().title.unwrap_or(String::new()))
                     .wrapping(cosmic::iced_core::text::Wrapping::WordOrGlyph)
                     .font(Font {
                         weight: Weight::Bold,
@@ -92,12 +96,14 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
                     }),
             )
             .push(
-                widget::text(now_playing.album.unwrap_or(String::new())).font(Font {
+                widget::text(now_playing.clone().album.unwrap_or(String::new())).font(Font {
                     style: font::Style::Italic,
                     ..Font::default()
                 }),
             )
-            .push(widget::text(now_playing.artist.unwrap_or(String::new())))
+            .push(widget::text(
+                now_playing.clone().artist.unwrap_or(String::new()),
+            ))
     }
 
     let now_playing_column = widget::column().width(Length::FillPortion(1)).push(
@@ -107,7 +113,7 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
             .push(now_playing_text),
     );
 
-    let play_icon = match app.playback_status {
+    let play_icon = match app.playback_service.status() {
         PlaybackStatus::Stopped => "media-playback-start-symbolic",
         PlaybackStatus::Paused => "media-playback-start-symbolic",
         _ => "media-playback-pause-symbolic",
@@ -122,17 +128,17 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
                 .align_y(Alignment::Center)
                 .spacing(space_xxs)
                 .width(Length::Fill)
-                .push(widget::text(format_time(app.playback_progress)))
+                .push(widget::text(format_time(app.playback_service.progress())))
                 .push(
                     widget::slider(
                         0.0..=now_playing.duration.unwrap_or(0.0),
-                        app.playback_progress,
+                        app.playback_service.progress(),
                         Message::SliderSeek,
                     )
                     .on_release(Message::ReleaseSlider),
                 )
                 .push(widget::text(format_time_left(
-                    app.playback_progress,
+                    app.playback_service.progress(),
                     now_playing.duration.unwrap_or(0.0),
                 ))),
         )

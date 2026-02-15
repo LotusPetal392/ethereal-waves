@@ -14,8 +14,9 @@ use crate::mpris::{MediaPlayer2, MediaPlayer2Player, MprisCommand};
 use crate::page::empty_library;
 use crate::page::list_view;
 use crate::page::loading;
-use crate::player::Player;
+use crate::playback_state::{PlaybackStatus, RepeatMode};
 use crate::playlist::{Playlist, Track};
+use crate::services::playback_service::{PlaybackEvent, PlaybackService};
 use crate::services::playlist_service::PlaylistService;
 use cosmic::iced_widget::scrollable::{self, AbsoluteOffset};
 use cosmic::prelude::*;
@@ -42,11 +43,8 @@ use cosmic::{
         nav_bar, row, settings, text, toggler,
     },
 };
-use gst::prelude::ElementExt;
-use gst::prelude::ElementExtManual;
 use gstreamer as gst;
 use gstreamer_pbutils as pbutils;
-use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use sha256::digest;
 use std::fmt::Debug;
@@ -59,7 +57,6 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use url::Url;
 use urlencoding::decode;
@@ -98,10 +95,11 @@ pub struct AppModel {
 
     app_xdg_dirs: BaseDirectories,
 
+    pub playback_service: PlaybackService,
+
     pub library: Library,
 
     pub is_updating: bool,
-    pub playback_progress: f32,
     pub update_progress: f32,
     pub update_total: f32,
     pub update_percent: f32,
@@ -109,12 +107,7 @@ pub struct AppModel {
 
     initial_load_complete: bool,
 
-    pub player: Player,
-
     dialog_pages: DialogPages,
-
-    pub now_playing: Option<MediaMetaData>,
-    dragging_progress_slider: bool,
 
     view_mode: ViewMode,
 
@@ -129,13 +122,9 @@ pub struct AppModel {
     shift_pressed: u8,
 
     pub view_playlist: Option<u32>,
-    pub playback_session: Option<PlaybackSession>,
 
     search_id: widget::Id,
     pub search_term: Option<String>,
-
-    mpris_rx: UnboundedReceiver<MprisCommand>,
-    pub playback_status: PlaybackStatus,
 
     pub image_store: ImageStore,
 
@@ -303,18 +292,15 @@ impl cosmic::Application for AppModel {
             state_handler: _flags.state_handler,
             state: _flags.state.clone(),
             app_xdg_dirs: app_xdg_dirs.clone(),
+            playback_service: PlaybackService::new(mpris_rx),
             initial_load_complete: false,
             library: Library::new(),
             is_updating: false,
-            playback_progress: 0.0,
             update_progress: 0.0,
             update_total: 0.0,
             update_percent: 0.0,
             update_progress_display: "0".into(),
-            dragging_progress_slider: false,
-            player: Player::new(),
             dialog_pages: DialogPages::new(),
-            now_playing: None,
             view_mode: ViewMode::List,
             size_multiplier: _flags.state.size_multiplier,
             list_scroll_id: widget::Id::unique(),
@@ -325,11 +311,8 @@ impl cosmic::Application for AppModel {
             control_pressed: 0,
             shift_pressed: 0,
             view_playlist: None,
-            playback_session: None,
             search_id: widget::Id::new(SEARCH_INPUT_ID),
             search_term: None,
-            mpris_rx,
-            playback_status: PlaybackStatus::Stopped,
             image_store: ImageStore::new(artwork_dir.clone()),
             playlist_service: PlaylistService::new(Arc::new(app_xdg_dirs.clone())),
         };
@@ -699,9 +682,10 @@ impl cosmic::Application for AppModel {
             }
 
             Message::AddNowPlayingToPlaylist(destination_id) => {
-                if let Some(now_playing) = self.now_playing.clone() {
-                    if let Some(now_playing_data) =
-                        self.library.from_id(&now_playing.id.unwrap_or_default())
+                if let Some(now_playing) = self.playback_service.now_playing().clone() {
+                    if let Some(now_playing_data) = self
+                        .library
+                        .from_id(&now_playing.clone().id.unwrap_or_default())
                     {
                         let track = Track {
                             path: now_playing_data.0.clone(),
@@ -727,71 +711,17 @@ impl cosmic::Application for AppModel {
                 let now = Instant::now();
 
                 if let Some(last) = self.list_last_clicked {
-                    // If double click, play the track
                     if is_double_click(last, DOUBLE_CLICK_THRESHOLD_MS) {
-                        // Check if we need to create a new session (different playlist or no session)
-                        let needs_new_session = self
-                            .playback_session
-                            .as_ref()
-                            .map(|session| session.playlist_id != self.view_playlist.unwrap())
-                            .unwrap_or(true);
-
-                        if needs_new_session {
-                            self.stop();
-
-                            let session = self.play_track_from_view_playlist(index);
-                            let track = &session.order[session.index];
-
-                            // Load the new track
-                            if let Ok(url) = Url::from_file_path(&track.path) {
-                                self.player.load(url.as_str());
+                        // Double-click: play track
+                        if let Some(playlist_id) = self.view_playlist {
+                            if let Ok(playlist) = self.playlist_service.get(playlist_id) {
+                                self.playback_service.start_session(
+                                    playlist,
+                                    index,
+                                    self.state.shuffle,
+                                );
+                                self.playback_service.play();
                             }
-
-                            self.playback_session = Some(session);
-                            self.update_now_playing();
-                            self.player.play();
-                            self.playback_status = PlaybackStatus::Playing;
-                        } else {
-                            // Same playlist - need to find the clicked track in the session order
-                            self.stop();
-
-                            let view_playlist_id = self.view_playlist;
-
-                            let clicked_track_id = self
-                                .playlist_service
-                                .get(view_playlist_id.unwrap_or(0))
-                                .ok()
-                                .and_then(|playlist| {
-                                    if index < playlist.tracks().len() {
-                                        playlist.tracks()[index].metadata.id.clone()
-                                    } else {
-                                        None
-                                    }
-                                });
-
-                            if let Some(session) = &mut self.playback_session {
-                                if let Some(id) = clicked_track_id {
-                                    session.index = session
-                                        .order
-                                        .iter()
-                                        .position(|t| {
-                                            t.metadata
-                                                .id
-                                                .as_ref()
-                                                .map_or(false, |track_id| track_id == &id)
-                                        })
-                                        .unwrap_or(0);
-
-                                    let track = &session.order[session.index];
-                                    if let Ok(url) = Url::from_file_path(&track.path) {
-                                        self.player.load(url.as_str());
-                                    }
-                                }
-                            }
-
-                            self.update_now_playing();
-                            self.player.play();
-                            self.playback_status = PlaybackStatus::Playing;
                         }
                     }
                 }
@@ -1101,23 +1031,19 @@ impl cosmic::Application for AppModel {
             }
 
             Message::Next => {
-                self.next();
+                self.playback_service.next(self.state.repeat_mode.clone());
             }
 
             Message::PeriodicLibraryUpdate(media) => {
                 self.library.media = media;
                 let _ = self.library.save(&self.app_xdg_dirs);
 
-                // Update the library playlist with new data
                 if let Ok(lib_playlist) = self.playlist_service.get_library_mut() {
-                    let library_id = lib_playlist.id();
-
                     lib_playlist.clear();
                     for (path, metadata) in &self.library.media {
                         let mut track = Track::new();
                         track.path = path.clone();
                         track.metadata = metadata.clone();
-
                         lib_playlist.push(track);
                     }
                     lib_playlist.sort(
@@ -1125,52 +1051,49 @@ impl cosmic::Application for AppModel {
                         self.state.sort_direction.clone(),
                     );
 
-                    self.update_playback_session_for_library(library_id);
+                    // Update playback session with new library data
+                    let library = lib_playlist.clone();
+                    self.playback_service.update_session_for_library(&library);
                 }
             }
 
-            Message::PlayPause => match self.playback_status {
-                PlaybackStatus::Stopped => {
-                    if let Some(session) = &self.playback_session {
-                        let track = &session.order[session.index];
-                        if let Ok(url) = Url::from_file_path(&track.path) {
-                            self.player.load(url.as_str());
+            Message::PlayPause => {
+                match self.playback_service.status() {
+                    PlaybackStatus::Stopped => {
+                        // Start playback from current view
+                        if let Some(playlist_id) = self.view_playlist {
+                            if let Ok(playlist) = self.playlist_service.get(playlist_id) {
+                                self.playback_service.start_session(
+                                    playlist,
+                                    0,
+                                    self.state.shuffle,
+                                );
+                                self.playback_service.play();
+                            }
                         }
                     }
-                    self.play();
-                    self.playback_status = PlaybackStatus::Playing;
+                    PlaybackStatus::Paused => {
+                        self.playback_service.play();
+                    }
+                    PlaybackStatus::Playing => {
+                        self.playback_service.pause();
+                    }
                 }
-                PlaybackStatus::Paused => {
-                    self.play();
-                    self.playback_status = PlaybackStatus::Playing;
-                }
-                PlaybackStatus::Playing => {
-                    self.pause();
-                    self.playback_status = PlaybackStatus::Paused;
-                }
-            },
+            }
 
             Message::Previous => {
-                self.prev();
+                self.playback_service.prev(self.state.repeat_mode.clone());
             }
 
             Message::Quit => {
-                print!("Quit message sent");
-                self.player.stop();
-                self.playback_status = PlaybackStatus::Stopped;
+                self.playback_service.stop();
                 process::exit(0);
             }
 
             Message::ReleaseSlider => {
-                // TODO: Don't seek if the player status isn't playing or paused
-                self.dragging_progress_slider = false;
-                match self.player.playbin.seek_simple(
-                    gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-                    gst::ClockTime::from_seconds(self.playback_progress as u64),
-                ) {
-                    Ok(_) => {}
-                    Err(err) => eprintln!("Failed to seek: {:?}", err),
-                };
+                let time = self.playback_service.progress();
+                self.playback_service.set_dragging_slider(false);
+                self.playback_service.seek(time);
             }
 
             Message::RemoveLibraryPath(path) => {
@@ -1233,54 +1156,49 @@ impl cosmic::Application for AppModel {
 
             Message::SetVolume(volume) => {
                 state_set!(volume, volume);
-                self.player.set_volume(volume as f64 / 100.0);
+                self.playback_service.set_volume(volume as f64 / 100.0);
             }
 
             Message::SliderSeek(time) => {
-                self.dragging_progress_slider = true;
-                self.playback_progress = time;
+                self.playback_service.set_dragging_slider(true);
+                self.playback_service.set_progress(time);
             }
 
             Message::Tick => {
-                self.validate_playback_session();
+                self.playback_service.validate_session();
 
-                // Handle GStreamer messages
-                let bus = self.player.playbin.bus().unwrap();
-                while let Some(msg) = bus.pop() {
-                    use gst::MessageView;
-                    match msg.view() {
-                        // MessageView::StateChanged(s) => {
-                        //     if s.src().map(|s| *s == self.player.playbin).unwrap_or(false) {
-                        //         println!("Current state: {:?}", s.current());
-                        //     }
-                        // }
-                        MessageView::Eos(..) => {
-                            self.next();
+                // Process playback events
+                let events = self.playback_service.tick();
+                for event in events {
+                    match event {
+                        PlaybackEvent::TrackEnded => {
+                            self.playback_service.next(self.state.repeat_mode.clone());
                         }
-                        MessageView::Error(err) => {
-                            eprintln!("Error: {}", err.error());
-                            self.next();
+                        PlaybackEvent::Error(err) => {
+                            eprintln!("Playback error: {}", err);
+                            self.playback_service.next(self.state.repeat_mode.clone());
                         }
-                        _ => (),
+                        PlaybackEvent::PositionUpdate(_) => {
+                            // Position already updated in service
+                        }
                     }
                 }
 
-                if !self.dragging_progress_slider {
-                    if let Some(pos) = self.player.playbin.query_position::<gst::ClockTime>() {
-                        self.playback_progress = pos.mseconds() as f32 / 1000.0;
-                    }
-                }
-
-                // Handle MPRIS Commands
-                while let Ok(cmd) = self.mpris_rx.try_recv() {
+                // Handle MPRIS commands
+                let commands = self.playback_service.process_mpris_commands();
+                for cmd in commands {
                     println!("mpris message: {:?}", cmd);
                     match cmd {
-                        MprisCommand::Play => self.play(),
-                        MprisCommand::Pause => self.pause(),
-                        MprisCommand::PlayPause => self.play_pause(),
-                        MprisCommand::Stop => self.stop(),
-                        MprisCommand::Next => self.next(),
-                        MprisCommand::Previous => self.prev(),
+                        MprisCommand::Play => self.playback_service.play(),
+                        MprisCommand::Pause => self.playback_service.pause(),
+                        MprisCommand::PlayPause => self.playback_service.play_pause(),
+                        MprisCommand::Stop => self.playback_service.stop(),
+                        MprisCommand::Next => {
+                            self.playback_service.next(self.state.repeat_mode.clone())
+                        }
+                        MprisCommand::Previous => {
+                            self.playback_service.prev(self.state.repeat_mode.clone())
+                        }
                         _ => {}
                     }
                 }
@@ -1321,9 +1239,10 @@ impl cosmic::Application for AppModel {
             Message::ToggleMute => {
                 let muted = !self.state.muted;
                 if muted {
-                    self.player.set_volume(0.0);
+                    self.playback_service.set_volume(0.0);
                 } else {
-                    self.player.set_volume(self.state.volume as f64 / 100.0);
+                    self.playback_service
+                        .set_volume(self.state.volume as f64 / 100.0);
                 }
                 state_set!(muted, muted);
             }
@@ -1347,7 +1266,14 @@ impl cosmic::Application for AppModel {
                 let shuffle = !self.state.shuffle;
                 state_set!(shuffle, shuffle);
 
-                self.update_playback_session_with_shuffle(shuffle);
+                // Update current session with new shuffle setting
+                if let Some(session) = self.playback_service.session() {
+                    let playlist_id = session.playlist_id;
+                    if let Ok(playlist) = self.playlist_service.get(playlist_id) {
+                        self.playback_service
+                            .update_session_shuffle(playlist, shuffle);
+                    }
+                }
             }
 
             Message::UpdateComplete(library) => {
@@ -1360,8 +1286,6 @@ impl cosmic::Application for AppModel {
 
                 // Update the library playlist with new data
                 if let Ok(lib_playlist) = self.playlist_service.get_library_mut() {
-                    let library_id = lib_playlist.id();
-
                     lib_playlist.clear();
                     for (path, metadata) in &self.library.media {
                         let mut track = Track::new();
@@ -1374,7 +1298,8 @@ impl cosmic::Application for AppModel {
                         self.state.sort_direction.clone(),
                     );
 
-                    self.update_playback_session_for_library(library_id);
+                    let library = lib_playlist.clone();
+                    self.playback_service.update_session_for_library(&library);
                 }
             }
 
@@ -1623,10 +1548,16 @@ impl cosmic::Application for AppModel {
         self.nav.activate(id);
 
         if let Some(Page::Playlist(pid)) = self.nav.data(id) {
+            // Check if we're switching to a different playlist
+            let is_switching = self.view_playlist != Some(*pid);
+
             self.view_playlist = Some(*pid);
 
-            if self.view_playlist != Some(*pid) {
+            if is_switching {
+                // Reset state when switching playlists
                 self.list_last_selected_id = None;
+                self.list_start = 0; // Reset scroll position state
+
                 return Task::batch([
                     self.update_title(),
                     scrollable::scroll_to(
@@ -1770,7 +1701,7 @@ impl AppModel {
             Some(playlist) => playlist.selected(),
             None => vec![],
         };
-        let take = LIST_PREVIEW_ITEMS;
+        let take = TRACK_INFO_LIST_TOTAL;
 
         let mut column = widget::column().spacing(space_xs);
 
@@ -2081,195 +2012,6 @@ impl AppModel {
             .collect()
     }
 
-    fn next(&mut self) {
-        if self.playback_session.is_none() {
-            return;
-        }
-
-        match self.state.repeat_mode {
-            RepeatMode::One => {
-                // In RepeatMode::One, we stay on the same track
-                // Just seek back to the beginning
-                if let Some(session) = &self.playback_session {
-                    let track = &session.order[session.index];
-                    if let Ok(url) = Url::from_file_path(&track.path) {
-                        self.player.stop();
-                        self.player.load(url.as_str());
-                        self.player.play();
-                        self.playback_status = PlaybackStatus::Playing;
-                    }
-                }
-                return;
-            }
-            _ => {
-                if self.playback_session.as_ref().unwrap().index + 1
-                    < self.playback_session.as_ref().unwrap().order.len()
-                {
-                    self.playback_session.as_mut().unwrap().index += 1;
-                } else if self.state.repeat_mode == RepeatMode::All {
-                    self.playback_session.as_mut().unwrap().index = 0;
-                } else {
-                    // End of playlist and not repeating
-                    self.player.stop();
-                    self.playback_status = PlaybackStatus::Stopped;
-                    return;
-                }
-            }
-        }
-
-        // Load and play the new track
-        if let Some(session) = &self.playback_session {
-            let track = &session.order[session.index];
-            if let Ok(url) = Url::from_file_path(&track.path) {
-                self.player.stop();
-                self.player.load(url.as_str());
-                self.player.play();
-                self.playback_status = PlaybackStatus::Playing;
-            }
-        }
-
-        self.update_now_playing();
-    }
-
-    fn prev(&mut self) {
-        if self.playback_session.is_none() {
-            return;
-        }
-
-        match self.state.repeat_mode {
-            RepeatMode::One => {
-                if let Some(session) = &self.playback_session {
-                    let track = &session.order[session.index];
-                    if let Ok(url) = Url::from_file_path(&track.path) {
-                        self.player.stop();
-                        self.player.load(url.as_str());
-                        self.player.play();
-                        self.playback_status = PlaybackStatus::Playing;
-                    }
-                }
-                self.update_now_playing();
-                return;
-            }
-            _ => {
-                if self.playback_session.as_ref().unwrap().index > 0 {
-                    self.playback_session.as_mut().unwrap().index = self
-                        .playback_session
-                        .as_ref()
-                        .unwrap()
-                        .index
-                        .saturating_sub(1);
-                } else if self.state.repeat_mode == RepeatMode::All {
-                    self.playback_session.as_mut().unwrap().index =
-                        self.playback_session.as_ref().unwrap().order.len() - 1;
-                } else {
-                    // At beginning of playlist and not repeating
-                    // Just restart the current track
-                    if let Some(session) = &self.playback_session {
-                        let track = &session.order[session.index];
-                        if let Ok(url) = Url::from_file_path(&track.path) {
-                            self.player.stop();
-                            self.player.load(url.as_str());
-                            self.player.play();
-                            self.playback_status = PlaybackStatus::Playing;
-                        }
-                    }
-                    self.update_now_playing();
-                    return;
-                }
-            }
-        }
-
-        // Load and play the new track
-        if let Some(session) = &self.playback_session {
-            let track = &session.order[session.index];
-            if let Ok(url) = Url::from_file_path(&track.path) {
-                self.player.stop();
-                self.player.load(url.as_str());
-                self.player.play();
-                self.playback_status = PlaybackStatus::Playing;
-            }
-        }
-
-        self.update_now_playing();
-    }
-
-    fn play_pause(&mut self) {
-        match self.playback_status {
-            PlaybackStatus::Stopped => self.play(),
-            PlaybackStatus::Paused => self.play(),
-            PlaybackStatus::Playing => self.pause(),
-        }
-    }
-
-    fn play(&mut self) {
-        if let None = self.playback_session {
-            let session = self.play_track_from_view_playlist(0);
-            self.playback_session = Some(session);
-            self.update_now_playing();
-        }
-
-        // Load the current track from the session
-        if let Some(session) = &self.playback_session {
-            let track = &session.order[session.index];
-            if let Ok(url) = Url::from_file_path(&track.path) {
-                self.player.load(url.as_str());
-            }
-        }
-
-        self.player.play();
-        self.playback_status = PlaybackStatus::Playing;
-        self.update_now_playing();
-    }
-
-    fn pause(&mut self) {
-        self.player.pause();
-        self.playback_status = PlaybackStatus::Paused;
-    }
-
-    fn stop(&mut self) {
-        self.player.stop();
-        self.playback_status = PlaybackStatus::Stopped;
-    }
-
-    fn play_track_from_view_playlist(&mut self, clicked_index: usize) -> PlaybackSession {
-        let playlist = self
-            .playlist_service
-            .get(self.view_playlist.unwrap_or(0))
-            .expect("Failed to get playlist");
-
-        let mut order = playlist.tracks().to_vec();
-
-        let index = if self.state.shuffle {
-            order.shuffle(&mut rand::rng());
-
-            let clicked = &playlist.tracks()[clicked_index];
-            order
-                .iter()
-                .position(|t| {
-                    t.metadata.id.clone().unwrap_or("".into())
-                        == clicked.metadata.id.clone().unwrap_or("".into())
-                })
-                .unwrap()
-        } else {
-            clicked_index
-        };
-
-        PlaybackSession {
-            playlist_id: playlist.id(),
-            order,
-            index,
-        }
-    }
-
-    fn update_now_playing(&mut self) {
-        if let Some(session) = &self.playback_session {
-            let track = session.order[session.index].clone();
-            self.now_playing = Some(track.metadata);
-        } else {
-            self.now_playing = None;
-        }
-    }
-
     pub fn calculate_list_view(&self) -> Option<ListViewModel> {
         let active_playlist = self.playlist_service.get(self.view_playlist?).ok()?;
 
@@ -2322,8 +2064,8 @@ impl AppModel {
         let viewport_height = tracks_len as f32 * row_stride;
 
         let is_playing_playlist = self
-            .playback_session
-            .as_ref()
+            .playback_service
+            .session()
             .map(|session| session.playlist_id == active_playlist.id())
             .unwrap_or(false);
 
@@ -2368,8 +2110,8 @@ impl AppModel {
     pub fn is_track_playing(&self, track: &Track, view_model: &ListViewModel) -> bool {
         view_model.is_playing_playlist
             && self
-                .playback_session
-                .as_ref()
+                .playback_service
+                .session()
                 .and_then(|session| {
                     session.order.get(session.index).and_then(|playing_track| {
                         let playing_id = playing_track.metadata.id.clone()?;
@@ -2384,176 +2126,6 @@ impl AppModel {
     fn get_active_playlist(&self) -> Option<&Playlist> {
         self.view_playlist
             .and_then(|id| self.playlist_service.get(id).ok())
-    }
-
-    /// Safely get a playlist by ID
-    fn get_playlist(&self, id: u32) -> Option<&Playlist> {
-        self.playlist_service.get(id).ok()
-    }
-
-    /// Get the currently playing track's ID (if any)
-    fn get_current_playing_id(&self) -> Option<String> {
-        self.playback_session.as_ref().and_then(|session| {
-            session
-                .order
-                .get(session.index)
-                .and_then(|track| track.metadata.id.clone())
-        })
-    }
-
-    /// Update playback session based on shuffle
-    fn update_playback_session_with_shuffle(&mut self, shuffle_enabled: bool) -> bool {
-        let (playlist_id, current_track_id) = match &self.playback_session {
-            Some(session) => (session.playlist_id, self.get_current_playing_id()),
-            None => return false,
-        };
-
-        if let Some(playlist) = self.get_playlist(playlist_id) {
-            let mut new_order = playlist.tracks().to_vec();
-
-            if shuffle_enabled {
-                new_order.shuffle(&mut rand::rng());
-            }
-
-            let new_index = if let Some(ref id) = current_track_id {
-                new_order
-                    .iter()
-                    .position(|t| {
-                        t.metadata
-                            .id
-                            .as_ref()
-                            .map_or(false, |track_id| track_id == id)
-                    })
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-
-            self.playback_session = Some(PlaybackSession {
-                playlist_id,
-                order: new_order,
-                index: new_index,
-            });
-            return true;
-        }
-        false
-    }
-
-    /// Validates and sanitizes the current playback session
-    /// Returns false if session is invalid and should be cleared
-    fn validate_playback_session(&mut self) -> bool {
-        let session_playlist_id = match &self.playback_session {
-            Some(session) => session.playlist_id,
-            None => return true,
-        };
-
-        if self.get_playlist(session_playlist_id).is_none() {
-            self.playback_session = None;
-            self.now_playing = None;
-            return false;
-        }
-
-        if let Some(session) = &mut self.playback_session {
-            // Bounds check
-            if session.index >= session.order.len() {
-                session.index = session.order.len().saturating_sub(1);
-            }
-
-            // Verify metadata validity
-            if let Some(track) = session.order.get(session.index) {
-                if track.metadata.id.is_none() {
-                    // Find next track with valid ID, or reset to 0
-                    session.index = session
-                        .order
-                        .iter()
-                        .skip(session.index)
-                        .position(|t| t.metadata.id.is_some())
-                        .map(|pos| session.index + pos)
-                        .unwrap_or(0);
-                }
-            }
-
-            return true;
-        }
-        true
-    }
-
-    /// Updates the playback session when the library playlist is modified
-    /// Preserves the current track and maintains shuffle order when possible
-    fn update_playback_session_for_library(&mut self, library_id: u32) {
-        // Get the current track ID before we take mutable borrows
-        let current_track_id = self.get_current_playing_id();
-
-        let Some(session) = &mut self.playback_session else {
-            return;
-        };
-
-        // Only update if the session is playing from the library
-        if session.playlist_id != library_id {
-            return;
-        }
-
-        let Some(lib_playlist) = self.playlist_service.get_library().ok() else {
-            return;
-        };
-
-        // Update tracks in the existing order with fresh metadata
-        let mut updated_order = Vec::new();
-
-        for old_track in &session.order {
-            if let Some(old_id) = &old_track.metadata.id {
-                // Find the updated version of this track
-                if let Some(new_track) = lib_playlist
-                    .tracks()
-                    .iter()
-                    .find(|t| t.metadata.id.as_ref() == Some(old_id))
-                {
-                    updated_order.push(new_track.clone());
-                }
-            }
-        }
-
-        // If shuffle wasn't enabled before, or if tracks were added/removed,
-        // we need to handle new/missing tracks
-        if updated_order.len() != lib_playlist.tracks().len() {
-            // Some tracks were added or removed from the library
-            if self.state.shuffle {
-                // Re-shuffle if shuffle is enabled
-                updated_order = lib_playlist.tracks().to_vec();
-                updated_order.shuffle(&mut rand::rng());
-            } else {
-                // Use the sorted playlist order
-                updated_order = lib_playlist.tracks().to_vec();
-            }
-        }
-
-        // Find current track in updated order
-        let new_index = if let Some(ref id) = current_track_id {
-            updated_order.iter().position(|t| {
-                t.metadata
-                    .id
-                    .as_ref()
-                    .map_or(false, |track_id| track_id == id)
-            })
-        } else {
-            None
-        };
-
-        // If the currently playing track was removed, stop playback
-        if new_index.is_none() && current_track_id.is_some() {
-            // The track that was playing is no longer in the library
-            self.player.stop();
-            self.playback_status = PlaybackStatus::Stopped;
-            self.playback_session = None;
-            self.now_playing = None;
-            return;
-        }
-
-        session.order = updated_order;
-        session.index = new_index.unwrap_or(0);
-
-        // Update now_playing with fresh metadata
-        self.update_now_playing();
     }
 
     /// Build nav items respecting the saved order
@@ -2805,45 +2377,6 @@ fn track_info_row<'a>(title: String, data: String) -> widget::Row<'a, Message> {
         .push(widget::text(data).width(Length::FillPortion(1)))
         .spacing(space_xxs)
         .width(Length::Fill)
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Clone, Debug)]
-pub enum RepeatMode {
-    One,
-    All,
-}
-
-#[derive(Clone)]
-pub struct PlaybackSession {
-    pub playlist_id: u32,
-    pub order: Vec<Track>,
-    pub index: usize,
-}
-
-impl Debug for PlaybackSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PlaybackSession")
-            .field("playlist_id", &self.playlist_id)
-            .field("order", &self.order)
-            .field("index", &self.index)
-            .finish()
-    }
-}
-
-pub enum PlaybackStatus {
-    Stopped,
-    Playing,
-    Paused,
-}
-
-impl PlaybackStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            PlaybackStatus::Playing => "Playing",
-            PlaybackStatus::Paused => "Paused",
-            PlaybackStatus::Stopped => "Stopped",
-        }
-    }
 }
 
 pub struct ListViewModel {

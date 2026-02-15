@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::app::{AppModel, RepeatMode, SortBy, SortDirection};
+use crate::app::{AppModel, SortBy, SortDirection};
+use crate::playback_state::RepeatMode;
 use cosmic::{
     Application,
     cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry},

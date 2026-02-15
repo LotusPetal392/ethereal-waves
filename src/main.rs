@@ -12,6 +12,7 @@ mod library;
 mod menu;
 mod mpris;
 mod page;
+mod playback_state;
 mod player;
 mod playlist;
 mod services;
