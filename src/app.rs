@@ -8,7 +8,6 @@ use crate::helpers::*;
 use crate::image_store::ImageStore;
 use crate::key_bind::key_binds;
 use crate::library::Library;
-use crate::library::MediaMetaData;
 use crate::menu::menu_bar;
 use crate::mpris::{MediaPlayer2, MediaPlayer2Player, MprisCommand};
 use crate::page::empty_library;
@@ -16,6 +15,7 @@ use crate::page::list_view;
 use crate::page::loading;
 use crate::playback_state::{PlaybackStatus, RepeatMode};
 use crate::playlist::{Playlist, Track};
+use crate::services::library_service::{LibraryProgress, LibraryService};
 use crate::services::playback_service::{PlaybackEvent, PlaybackService};
 use crate::services::playlist_service::PlaylistService;
 use cosmic::iced_widget::scrollable::{self, AbsoluteOffset};
@@ -43,24 +43,17 @@ use cosmic::{
         nav_bar, row, settings, text, toggler,
     },
 };
-use gstreamer as gst;
-use gstreamer_pbutils as pbutils;
 use serde::{Deserialize, Serialize};
-use sha256::digest;
 use std::fmt::Debug;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    fs::{self, File},
-    io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use url::Url;
 use urlencoding::decode;
-use walkdir::WalkDir;
 use xdg::BaseDirectories;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -93,8 +86,9 @@ pub struct AppModel {
     state_handler: Option<cosmic_config::Config>,
     pub state: crate::config::State,
 
-    app_xdg_dirs: BaseDirectories,
+    app_xdg_dirs: Arc<BaseDirectories>,
 
+    pub library_service: LibraryService,
     pub playback_service: PlaybackService,
 
     pub library: Library,
@@ -146,6 +140,7 @@ pub enum Message {
     KeyReleased(Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
+    LibraryProgress(LibraryProgress),
     ListSelectRow(usize),
     ListViewScroll(scrollable::Viewport),
     ListViewSort(SortBy),
@@ -154,7 +149,6 @@ pub enum Message {
     NewPlaylist,
     Next,
     Noop,
-    PeriodicLibraryUpdate(HashMap<PathBuf, MediaMetaData>),
     PlayPause,
     Previous,
     Quit,
@@ -177,11 +171,9 @@ pub enum Message {
     ToggleRepeat,
     ToggleRepeatMode,
     ToggleShuffle,
-    UpdateComplete(Library),
     UpdateConfig(Config),
     UpdateDialog(DialogPage),
     UpdateLibrary,
-    UpdateProgress(f32, f32, f32),
     WindowResized(Size),
     ZoomIn,
     ZoomOut,
@@ -291,7 +283,8 @@ impl cosmic::Application for AppModel {
             config_handler: _flags.config_handler,
             state_handler: _flags.state_handler,
             state: _flags.state.clone(),
-            app_xdg_dirs: app_xdg_dirs.clone(),
+            app_xdg_dirs: Arc::new(app_xdg_dirs.clone()),
+            library_service: LibraryService::new(Arc::new(app_xdg_dirs.clone())),
             playback_service: PlaybackService::new(mpris_rx),
             initial_load_complete: false,
             library: Library::new(),
@@ -804,73 +797,7 @@ impl cosmic::Application for AppModel {
             }
 
             Message::KeyPressed(modifiers, key) => {
-                for (key_bind, action) in self.key_binds.iter() {
-                    if key_bind.matches(modifiers, &key) {
-                        return self.update(action.message());
-                    }
-                }
-                if key == Key::Named(Named::Control) && self.control_pressed < 2 {
-                    self.control_pressed += 1;
-                }
-                if key == Key::Named(Named::Shift) && self.shift_pressed < 2 {
-                    self.shift_pressed += 1;
-                }
-
-                if self.dialog_pages.front().is_some() {
-                    if key == Key::Named(Named::Escape) {
-                        return self.update(Message::DialogCancel);
-                    }
-
-                    match self.dialog_pages.front().unwrap() {
-                        DialogPage::NewPlaylist(name) => {
-                            if key == Key::Named(Named::Enter) && name.len() > 0 {
-                                return self.update(Message::DialogComplete);
-                            }
-                        }
-                        DialogPage::RenamePlaylist { id, name } => {
-                            let _ = id;
-                            if key == Key::Named(Named::Enter) && name.len() > 0 {
-                                return self.update(Message::DialogComplete);
-                            }
-                        }
-                        DialogPage::DeletePlaylist(_) => {}
-                        DialogPage::DeleteSelectedFromPlaylist => {}
-                    }
-
-                    if key == Key::Named(Named::Enter) {
-                        return self.update(Message::DialogComplete);
-                    }
-                }
-
-                if matches!(self.view_mode, ViewMode::List) {
-                    if let Some(view_model) = self.calculate_list_view() {
-                        // Calculate scroll amount: one full page of visible rows
-                        let scroll_amount =
-                            self.list_visible_row_count as f32 * view_model.row_stride;
-
-                        match key {
-                            Key::Named(Named::PageUp) => {
-                                return scrollable::scroll_by::<Action<Message>>(
-                                    self.list_scroll_id.clone(),
-                                    scrollable::AbsoluteOffset {
-                                        x: 0.0,
-                                        y: -scroll_amount,
-                                    },
-                                );
-                            }
-                            Key::Named(Named::PageDown) => {
-                                return scrollable::scroll_by::<Action<Message>>(
-                                    self.list_scroll_id.clone(),
-                                    scrollable::AbsoluteOffset {
-                                        x: 0.0,
-                                        y: scroll_amount,
-                                    },
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                return self.handle_key_pressed(modifiers, key);
             }
 
             Message::KeyReleased(key) => {
@@ -885,6 +812,42 @@ impl cosmic::Application for AppModel {
             Message::LibraryPathOpenError(why) => {
                 eprintln!("{why}");
             }
+
+            Message::LibraryProgress(progress) => match progress {
+                LibraryProgress::Progress {
+                    current,
+                    total,
+                    percent,
+                } => {
+                    self.update_progress = current;
+                    self.update_total = total;
+                    self.update_percent = percent;
+                    self.update_progress_display = format!(
+                        "{} {}/{} ({:.2}%)",
+                        fl!("updating-library"),
+                        current,
+                        total,
+                        percent
+                    );
+                }
+
+                LibraryProgress::PartialUpdate(media) => {
+                    self.library.media = media;
+                    if let Err(e) = self.library_service.save(&self.library) {
+                        eprintln!("Error saving partial library update: {}", e);
+                    }
+                    self.update_library_playlist();
+                }
+
+                LibraryProgress::Complete(library) => {
+                    self.library = library;
+                    if let Err(e) = self.library_service.save(&self.library) {
+                        eprintln!("Error saving library: {}", e);
+                    }
+                    self.is_updating = false;
+                    self.update_library_playlist();
+                }
+            },
 
             Message::ListSelectRow(index) => {
                 let Some(playlist_id) = self.view_playlist else {
@@ -1032,29 +995,6 @@ impl cosmic::Application for AppModel {
 
             Message::Next => {
                 self.playback_service.next(self.state.repeat_mode.clone());
-            }
-
-            Message::PeriodicLibraryUpdate(media) => {
-                self.library.media = media;
-                let _ = self.library.save(&self.app_xdg_dirs);
-
-                if let Ok(lib_playlist) = self.playlist_service.get_library_mut() {
-                    lib_playlist.clear();
-                    for (path, metadata) in &self.library.media {
-                        let mut track = Track::new();
-                        track.path = path.clone();
-                        track.metadata = metadata.clone();
-                        lib_playlist.push(track);
-                    }
-                    lib_playlist.sort(
-                        self.state.sort_by.clone(),
-                        self.state.sort_direction.clone(),
-                    );
-
-                    // Update playback session with new library data
-                    let library = lib_playlist.clone();
-                    self.playback_service.update_session_for_library(&library);
-                }
             }
 
             Message::PlayPause => {
@@ -1276,33 +1216,6 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::UpdateComplete(library) => {
-                self.library = library;
-                match self.library.save(&self.app_xdg_dirs) {
-                    Ok(_) => {}
-                    Err(e) => eprintln!("There was an error saving library data: {e}"),
-                };
-                self.is_updating = false;
-
-                // Update the library playlist with new data
-                if let Ok(lib_playlist) = self.playlist_service.get_library_mut() {
-                    lib_playlist.clear();
-                    for (path, metadata) in &self.library.media {
-                        let mut track = Track::new();
-                        track.path = path.clone();
-                        track.metadata = metadata.clone();
-                        lib_playlist.push(track);
-                    }
-                    lib_playlist.sort(
-                        self.state.sort_by.clone(),
-                        self.state.sort_direction.clone(),
-                    );
-
-                    let library = lib_playlist.clone();
-                    self.playback_service.update_session_for_library(&library);
-                }
-            }
-
             Message::UpdateConfig(config) => {
                 self.config = config;
             }
@@ -1338,180 +1251,12 @@ impl cosmic::Application for AppModel {
 
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
-                std::thread::spawn(move || {
-                    let mut library: Library = Library::new();
+                // Spawn the scan in a background thread
+                LibraryService::scan_library(library_paths, xdg_dirs, tx);
 
-                    // Get paths
-                    for path in library_paths {
-                        for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
-                            let extension = entry
-                                .file_name()
-                                .to_str()
-                                .unwrap_or("")
-                                .split(".")
-                                .last()
-                                .unwrap_or("")
-                                .to_lowercase();
-                            let size = entry.metadata().unwrap().len();
-
-                            if VALID_AUDIO_EXTENSIONS.contains(&extension.as_str())
-                                && size > MIN_FILE_SIZE
-                            {
-                                library
-                                    .media
-                                    .insert(entry.into_path(), MediaMetaData::new());
-                            }
-                        }
-                    }
-
-                    // Get metadata
-                    if let Err(err) = gst::init() {
-                        eprintln!("Failed to initialize GStreamer: {}", err);
-                        _ = tx.send(Message::UpdateProgress(0.0, 0.0, 0.0));
-                        _ = tx.send(Message::UpdateComplete(library));
-                        return;
-                    }
-
-                    let mut update_progress: f32 = 0.0;
-                    let update_total: f32 = library.media.len() as f32;
-
-                    let mut last_progress_update: Instant = std::time::Instant::now();
-                    let update_progress_interval: Duration =
-                        std::time::Duration::from_millis(PROGRESS_UPDATE_INTERVAL_MS);
-
-                    let mut last_library_update: Instant = std::time::Instant::now();
-                    let update_library_interval: Duration =
-                        std::time::Duration::from_secs(LIBRARY_UPDATE_INTERVAL_SECS);
-
-                    let mut entries: Vec<(PathBuf, MediaMetaData)> =
-                        library.media.into_iter().collect();
-
-                    let mut completed_entries: HashMap<PathBuf, MediaMetaData> = HashMap::new();
-
-                    entries.iter_mut().for_each(|(file, track_metadata)| {
-                        let discoverer = match pbutils::Discoverer::new(
-                            gst::ClockTime::from_seconds(GSTREAMER_TIMEOUT_SECS),
-                        ) {
-                            Ok(discoverer) => discoverer,
-                            Err(error) => panic!("Failed to create discoverer: {:?}", error),
-                        };
-
-                        let file_str = match file.to_str() {
-                            Some(file_str) => file_str,
-                            None => "",
-                        };
-
-                        let uri = Url::from_file_path(file_str).unwrap();
-
-                        let info = match discoverer.discover_uri(&uri.as_str()) {
-                            Ok(info) => info,
-                            Err(err) => {
-                                eprintln!("Failed to read metadata from {}: {}", file_str, err);
-                                return; // Skip this file and move on
-                            }
-                        };
-
-                        track_metadata.id = Some(digest(file_str));
-
-                        // Read tags
-                        if let Some(tags) = info.tags() {
-                            // Title
-                            track_metadata.title =
-                                tags.get::<gst::tags::Title>().map(|t| t.get().to_owned());
-                            // Artist
-                            track_metadata.artist =
-                                tags.get::<gst::tags::Artist>().map(|t| t.get().to_owned());
-                            // Album
-                            track_metadata.album =
-                                tags.get::<gst::tags::Album>().map(|t| t.get().to_owned());
-                            //Album Artist
-                            track_metadata.album_artist = tags
-                                .get::<gst::tags::AlbumArtist>()
-                                .map(|t| t.get().to_owned());
-                            // Genre
-                            track_metadata.genre =
-                                tags.get::<gst::tags::Genre>().map(|t| t.get().to_owned());
-                            // Track Number
-                            track_metadata.track_number = tags
-                                .get::<gst::tags::TrackNumber>()
-                                .map(|t| t.get().to_owned());
-                            // Track Count
-                            track_metadata.track_count = tags
-                                .get::<gst::tags::TrackCount>()
-                                .map(|t| t.get().to_owned());
-                            // Disc Number
-                            track_metadata.album_disc_number = tags
-                                .get::<gst::tags::AlbumVolumeNumber>()
-                                .map(|t| t.get().to_owned());
-                            // Disc Count
-                            track_metadata.album_disc_count = tags
-                                .get::<gst::tags::AlbumVolumeCount>()
-                                .map(|t| t.get().to_owned());
-                            // Duration
-                            if let Some(duration) = info.duration() {
-                                track_metadata.duration = Some(duration.seconds() as f32);
-                            }
-
-                            // Cache artwork
-                            if let Some(sample) = tags.get::<gst::tags::Image>() {
-                                track_metadata.artwork_filename =
-                                    cache_image(sample.get(), xdg_dirs.clone());
-                            } else if let Some(sample) = tags.get::<gst::tags::PreviewImage>() {
-                                track_metadata.artwork_filename =
-                                    cache_image(sample.get(), xdg_dirs.clone());
-                            }
-                        } else {
-                            // If there's no metadata just fill in the filename
-                            track_metadata.title = Some(file.to_string_lossy().to_string());
-                        }
-
-                        completed_entries.insert(file.clone(), track_metadata.clone());
-
-                        // Update progress bar
-                        // let mut progress: f32 = update_progress;
-                        update_progress += 1.0;
-                        let now = std::time::Instant::now();
-                        if now.duration_since(last_progress_update) >= update_progress_interval {
-                            last_progress_update = now;
-                            _ = tx.send(Message::UpdateProgress(
-                                update_progress,
-                                update_total,
-                                update_progress / update_total * 100.0,
-                            ));
-                        }
-
-                        // Send periodic library updates
-                        if now.duration_since(last_library_update) >= update_library_interval {
-                            last_library_update = now;
-                            _ = tx.send(Message::PeriodicLibraryUpdate(completed_entries.clone()));
-                        }
-                    });
-
-                    // Convert back to HashMap
-                    library.media = entries.into_iter().collect();
-
-                    // Remove anything without an id
-                    library.media.retain(|_, v| v.id.is_some());
-
-                    _ = tx.send(Message::UpdateProgress(update_total, update_total, 100.0));
-                    _ = tx.send(Message::UpdateComplete(library));
-                });
-
+                // Stream progress updates back to the UI
                 return cosmic::Task::stream(UnboundedReceiverStream::new(rx))
-                    .map(cosmic::Action::App);
-            }
-
-            Message::UpdateProgress(update_progress, update_total, percent) => {
-                self.update_progress = update_progress;
-                self.update_total = update_total;
-                self.update_percent = percent;
-                self.update_progress_display = format!(
-                    "{} {}/{} ({:.2}%)",
-                    fl!("updating-library"),
-                    update_progress,
-                    update_total,
-                    percent
-                )
+                    .map(|progress| cosmic::Action::App(Message::LibraryProgress(progress)));
             }
 
             Message::WindowResized(size) => {
@@ -1795,8 +1540,11 @@ impl AppModel {
     /// Load library and playlists
     pub fn load_data(&mut self) -> Task<cosmic::Action<Message>> {
         // Load library from disk
-        let library_media = Self::load_library(&self.app_xdg_dirs).unwrap_or_default();
-        self.library.media = library_media.clone();
+        self.library = self.library_service.load().unwrap_or_else(|e| {
+            eprintln!("Error loading library: {}", e);
+            Library::new()
+        });
+        let library_media = self.library.media.clone();
 
         // Convert library to tracks
         let library_tracks: Vec<Track> = library_media
@@ -1885,25 +1633,6 @@ impl AppModel {
 
         self.initial_load_complete = true;
         Task::none()
-    }
-
-    /// Load library.json file if it exists
-    pub fn load_library(
-        xdg_dirs: &BaseDirectories,
-    ) -> anyhow::Result<HashMap<PathBuf, MediaMetaData>> {
-        let mut media: HashMap<PathBuf, MediaMetaData> = xdg_dirs
-            .get_data_file(LIBRARY_FILENAME)
-            .map(|path| {
-                let content = fs::read_to_string(path)?;
-                Ok::<_, anyhow::Error>(serde_json::from_str(&content)?)
-            })
-            .transpose()?
-            .unwrap_or_default();
-
-        // Remove any entry without an id
-        media.retain(|_, v| v.id.is_some());
-
-        Ok(media)
     }
 
     fn rebuild_nav_from_order(&mut self, items: Vec<NavPlaylistItem>, activate_id: u32) {
@@ -2170,6 +1899,99 @@ impl AppModel {
                 .collect()
         }
     }
+
+    fn update_library_playlist(&mut self) {
+        if let Ok(lib_playlist) = self.playlist_service.get_library_mut() {
+            lib_playlist.clear();
+            for (path, metadata) in &self.library.media {
+                let mut track = Track::new();
+                track.path = path.clone();
+                track.metadata = metadata.clone();
+                lib_playlist.push(track);
+            }
+            lib_playlist.sort(
+                self.state.sort_by.clone(),
+                self.state.sort_direction.clone(),
+            );
+
+            let library = lib_playlist.clone();
+            self.playback_service.update_session_for_library(&library);
+        }
+    }
+
+    fn handle_key_pressed(&mut self, modifiers: Modifiers, key: Key) -> Task<Action<Message>> {
+        // Check key bindings first
+        for (key_bind, action) in self.key_binds.iter() {
+            if key_bind.matches(modifiers, &key) {
+                // Don't call self.update() - return a task that processes the message
+                let message = action.message();
+                return Task::done(cosmic::Action::App(message));
+            }
+        }
+
+        if key == Key::Named(Named::Control) && self.control_pressed < 2 {
+            self.control_pressed += 1;
+        }
+        if key == Key::Named(Named::Shift) && self.shift_pressed < 2 {
+            self.shift_pressed += 1;
+        }
+
+        if self.dialog_pages.front().is_some() {
+            if key == Key::Named(Named::Escape) {
+                return Task::done(cosmic::Action::App(Message::DialogCancel));
+            }
+
+            match self.dialog_pages.front().unwrap() {
+                DialogPage::NewPlaylist(name) => {
+                    if key == Key::Named(Named::Enter) && name.len() > 0 {
+                        return Task::done(cosmic::Action::App(Message::DialogComplete));
+                    }
+                }
+                DialogPage::RenamePlaylist { id, name } => {
+                    let _ = id;
+                    if key == Key::Named(Named::Enter) && name.len() > 0 {
+                        return Task::done(cosmic::Action::App(Message::DialogComplete));
+                    }
+                }
+                DialogPage::DeletePlaylist(_) => {}
+                DialogPage::DeleteSelectedFromPlaylist => {}
+            }
+
+            if key == Key::Named(Named::Enter) {
+                return Task::done(cosmic::Action::App(Message::DialogComplete));
+            }
+        }
+
+        if matches!(self.view_mode, ViewMode::List) {
+            if let Some(view_model) = self.calculate_list_view() {
+                let scroll_amount = self.list_visible_row_count as f32 * view_model.row_stride;
+
+                match key {
+                    Key::Named(Named::PageUp) => {
+                        return scrollable::scroll_by::<Action<Message>>(
+                            self.list_scroll_id.clone(),
+                            scrollable::AbsoluteOffset {
+                                x: 0.0,
+                                y: -scroll_amount,
+                            },
+                        );
+                    }
+                    Key::Named(Named::PageDown) => {
+                        return scrollable::scroll_by::<Action<Message>>(
+                            self.list_scroll_id.clone(),
+                            scrollable::AbsoluteOffset {
+                                x: 0.0,
+                                y: scroll_amount,
+                            },
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Task::none()
+    }
 }
 
 #[derive(Clone)]
@@ -2250,45 +2072,6 @@ impl menu::action::MenuAction for MenuAction {
             MenuAction::ZoomOut => Message::ZoomOut,
         }
     }
-}
-
-// Saves album artwork to files, no duplicates
-fn cache_image(sample: gst::Sample, xdg_dirs: BaseDirectories) -> Option<String> {
-    let buffer = match sample.buffer() {
-        Some(b) => b,
-        None => return None,
-    };
-
-    let caps = match sample.caps() {
-        Some(c) => c,
-        None => return None,
-    };
-
-    let mime = caps
-        .structure(0)
-        .and_then(|s| s.name().split('/').nth(1))
-        .unwrap_or("jpg");
-
-    let map = buffer.map_readable().ok();
-    let hash = digest(map.as_ref().unwrap().as_slice());
-    let file_name = format!("{hash}.{mime}");
-    let full_path = match xdg_dirs.place_cache_file(format!("{ARTWORK_DIR}/{file_name}")) {
-        Ok(full_path) => full_path,
-        Err(_) => return None,
-    };
-
-    if !Path::new(&full_path).exists() {
-        let mut file = match File::create(full_path) {
-            Ok(file) => file,
-            Err(_) => return None,
-        };
-
-        match file.write_all(map.unwrap().as_slice()) {
-            Ok(()) => (),
-            Err(err) => eprintln!("Cannot save album artwork: {:?}", err),
-        }
-    }
-    Some(file_name)
 }
 
 #[derive(Clone, Debug)]
