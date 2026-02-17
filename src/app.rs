@@ -874,7 +874,14 @@ impl cosmic::Application for AppModel {
                     return Task::none();
                 };
 
-                if self.control_pressed > 0 {
+                if self.control_pressed > 0 && self.shift_pressed > 0 {
+                    // Ctrl + Shift + Click: select range
+                    if let Some(last_id) = self.list_last_selected_id {
+                        let _ = self
+                            .playlist_service
+                            .select_range(playlist_id, last_id, index);
+                    }
+                } else if self.control_pressed > 0 {
                     // Ctrl + Click: toggle selection
                     let Ok(playlist) = self.playlist_service.get(playlist_id) else {
                         return Task::none();
@@ -887,13 +894,6 @@ impl cosmic::Application for AppModel {
                     }
 
                     self.list_last_selected_id = Some(index);
-                } else if self.control_pressed > 0 && self.shift_pressed > 0 {
-                    // Ctrl + Shift + Click: select range
-                    if let Some(last_id) = self.list_last_selected_id {
-                        let _ = self
-                            .playlist_service
-                            .select_range(playlist_id, last_id, index);
-                    }
                 } else {
                     // Click: clear all and select one
                     let _ = self.playlist_service.clear_selection(playlist_id);
