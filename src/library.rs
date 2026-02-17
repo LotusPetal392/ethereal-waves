@@ -34,10 +34,7 @@ impl Library {
     }
 
     pub fn from_id(&self, id: &String) -> Option<(&PathBuf, &MediaMetaData)> {
-        if let Some(entry) = self.media.iter().find(|(_, v)| v.id == Some(id.clone())) {
-            return Some(entry);
-        }
-        None
+        self.media.iter().find(|(_, v)| v.id.as_deref() == Some(id))
     }
 }
 

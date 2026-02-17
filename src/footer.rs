@@ -41,12 +41,25 @@ pub fn footer<'a>(app: &AppModel) -> Element<'a, Message> {
     if app.is_updating {
         let updating_col = widget::column()
             .spacing(space_xxs)
-            .push(widget::progress_bar(0.0..=100.0, app.update_percent).height(progress_bar_height))
-            .push(widget::text(if app.update_progress == 0.0 {
-                fl!("scanning-paths")
-            } else {
-                app.update_progress_display.to_string()
-            }))
+            .push(widget::row().push(
+                widget::progress_bar(0.0..=100.0, app.update_percent).height(progress_bar_height),
+            ))
+            .push(
+                widget::row()
+                    .push(widget::text(if app.update_progress == 0.0 {
+                        fl!("scanning-paths")
+                    } else {
+                        app.update_progress_display.to_string()
+                    }))
+                    .push(widget::horizontal_space())
+                    .push(widget::tooltip(
+                        widget::button::icon(widget::icon::from_name("process-stop-symbolic"))
+                            .on_press(Message::CancelLibraryUpdate),
+                        widget::text(fl!("cancel-update")),
+                        Position::Bottom,
+                    ))
+                    .align_y(Alignment::Center),
+            )
             .push(widget::vertical_space().height(space_xs));
 
         content = content.push(updating_col);

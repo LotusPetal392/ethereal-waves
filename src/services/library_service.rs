@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 use walkdir::WalkDir;
 use xdg::BaseDirectories;
@@ -30,6 +31,7 @@ pub enum LibraryProgress {
     PartialUpdate(HashMap<PathBuf, MediaMetaData>),
     /// Final complete library
     Complete(Library),
+    Cancelled,
 }
 
 #[derive(Debug)]
@@ -109,12 +111,19 @@ impl LibraryService {
         paths: HashSet<String>,
         xdg_dirs: Arc<BaseDirectories>,
         progress_tx: UnboundedSender<LibraryProgress>,
+        cancel_token: CancellationToken,
     ) {
         std::thread::spawn(move || {
             let mut library = Library::new();
 
             // Step 1: Collect all audio file paths
             for path in paths {
+                if cancel_token.is_cancelled() {
+                    log::info!("Library scan cancelled by user");
+                    let _ = progress_tx.send(LibraryProgress::Cancelled);
+                    return;
+                }
+
                 for entry in WalkDir::new(&path).into_iter().filter_map(|e| e.ok()) {
                     let extension = entry
                         .file_name()
@@ -139,12 +148,22 @@ impl LibraryService {
             // Step 2: Extract metadata from each file
             if let Err(err) = gst::init() {
                 eprintln!("Failed to initialize GStreamer: {}", err);
-                let _ = progress_tx.send(LibraryProgress::Progress {
-                    current: 0.0,
-                    total: 0.0,
-                    percent: 0.0,
-                });
-                let _ = progress_tx.send(LibraryProgress::Complete(library));
+                if progress_tx
+                    .send(LibraryProgress::Progress {
+                        current: 0.0,
+                        total: 0.0,
+                        percent: 0.0,
+                    })
+                    .is_err()
+                {
+                    log::warn!("Failed to send progress update")
+                };
+                if progress_tx
+                    .send(LibraryProgress::Complete(library))
+                    .is_err()
+                {
+                    log::warn!("Failed to send completion update")
+                };
                 return;
             }
 
@@ -161,11 +180,32 @@ impl LibraryService {
 
             let mut completed_entries: HashMap<PathBuf, MediaMetaData> = HashMap::new();
 
-            entries.iter_mut().for_each(|(file, track_metadata)| {
-                // Extract metadata for this file
-                if let Err(e) = Self::extract_metadata(file, track_metadata, &xdg_dirs) {
-                    eprintln!("Failed to extract metadata from {:?}: {}", file, e);
+            let discoverer = match pbutils::Discoverer::new(gst::ClockTime::from_seconds(
+                GSTREAMER_TIMEOUT_SECS,
+            ))
+            .map_err(|e| format!("Failed to create discoverer: {:?}", e))
+            .ok()
+            {
+                Some(discoverer) => discoverer,
+                None => {
+                    eprintln!("Failed to create discoverer");
                     return;
+                }
+            };
+
+            for (file, track_metadata) in entries.iter_mut() {
+                // Check for cancellation before processing each file
+                if cancel_token.is_cancelled() {
+                    log::info!("Library scan cancelled during metadata extraction");
+                    let _ = progress_tx.send(LibraryProgress::Cancelled);
+                    return;
+                }
+
+                // Extract metadata for this file
+                if let Err(e) = Self::extract_metadata(file, track_metadata, &xdg_dirs, &discoverer)
+                {
+                    eprintln!("Failed to extract metadata from {:?}: {}", file, e);
+                    continue; // ← Changed from return
                 }
 
                 completed_entries.insert(file.clone(), track_metadata.clone());
@@ -189,21 +229,7 @@ impl LibraryService {
                     let _ =
                         progress_tx.send(LibraryProgress::PartialUpdate(completed_entries.clone()));
                 }
-            });
-
-            // Convert back to HashMap
-            library.media = entries.into_iter().collect();
-
-            // Remove anything without an id
-            library.media.retain(|_, v| v.id.is_some());
-
-            // Send final updates
-            let _ = progress_tx.send(LibraryProgress::Progress {
-                current: update_total,
-                total: update_total,
-                percent: 100.0,
-            });
-            let _ = progress_tx.send(LibraryProgress::Complete(library));
+            }
         });
     }
 
@@ -212,11 +238,8 @@ impl LibraryService {
         file: &PathBuf,
         track_metadata: &mut MediaMetaData,
         xdg_dirs: &BaseDirectories,
+        discoverer: &pbutils::Discoverer,
     ) -> Result<(), String> {
-        let discoverer =
-            pbutils::Discoverer::new(gst::ClockTime::from_seconds(GSTREAMER_TIMEOUT_SECS))
-                .map_err(|e| format!("Failed to create discoverer: {:?}", e))?;
-
         let file_str = file
             .to_str()
             .ok_or_else(|| "Invalid file path".to_string())?;

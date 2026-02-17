@@ -53,6 +53,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_util::sync::CancellationToken;
 use urlencoding::decode;
 use xdg::BaseDirectories;
 
@@ -89,6 +90,7 @@ pub struct AppModel {
     app_xdg_dirs: Arc<BaseDirectories>,
 
     pub library_service: LibraryService,
+    library_update_cancel: Option<CancellationToken>,
     pub playback_service: PlaybackService,
 
     pub library: Library,
@@ -132,6 +134,7 @@ pub enum Message {
     AddSelectedToPlaylist(PlaylistId),
     AddNowPlayingToPlaylist(PlaylistId),
     AppTheme(AppTheme),
+    CancelLibraryUpdate,
     ChangeTrack(String, usize),
     DeletePlaylist,
     DialogCancel,
@@ -285,6 +288,7 @@ impl cosmic::Application for AppModel {
             state: _flags.state.clone(),
             app_xdg_dirs: Arc::new(app_xdg_dirs.clone()),
             library_service: LibraryService::new(Arc::new(app_xdg_dirs.clone())),
+            library_update_cancel: None,
             playback_service: PlaybackService::new(mpris_rx),
             initial_load_complete: false,
             library: Library::new(),
@@ -696,6 +700,13 @@ impl cosmic::Application for AppModel {
                 }
             }
 
+            Message::CancelLibraryUpdate => {
+                if let Some(cancel_token) = self.library_update_cancel.take() {
+                    cancel_token.cancel();
+                    self.is_updating = false;
+                }
+            }
+
             Message::ChangeTrack(id, index) => {
                 if self.library.from_id(&id).is_none() {
                     return Task::none();
@@ -846,6 +857,12 @@ impl cosmic::Application for AppModel {
                     }
                     self.is_updating = false;
                     self.update_library_playlist();
+                }
+
+                LibraryProgress::Cancelled => {
+                    self.is_updating = false;
+                    self.update_library_playlist();
+                    log::info!("Library update cancelled")
                 }
             },
 
@@ -1251,10 +1268,13 @@ impl cosmic::Application for AppModel {
 
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
-                // Spawn the scan in a background thread
-                LibraryService::scan_library(library_paths, xdg_dirs, tx);
+                // Create cancellation token
+                let cancel_token = CancellationToken::new();
+                self.library_update_cancel = Some(cancel_token.clone()); // ← Store it
 
-                // Stream progress updates back to the UI
+                // Spawn the scan with cancellation support
+                LibraryService::scan_library(library_paths, xdg_dirs, tx, cancel_token);
+
                 return cosmic::Task::stream(UnboundedReceiverStream::new(rx))
                     .map(|progress| cosmic::Action::App(Message::LibraryProgress(progress)));
             }
