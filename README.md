@@ -1,5 +1,9 @@
 # Ethereal Waves
 
+## This repository has moved
+All further development will be done at [https://github.com/cosmic-utils/ethereal-waves](https://github.com/cosmic-utils/ethereal-waves)
+
+
 A basic music player based on libcosmic. It's still very much a work in progress.
 
 ![Ethereal Waves - Dark Mode](https://github.com/LotusPetal392/ethereal-waves/blob/b970a4506b73b681b760d581c70f30d3a7eeed4b/screenshots/Ethereal%20Waves%20-%20Dark%20Mode.png?raw=true)
