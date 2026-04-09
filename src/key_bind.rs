@@ -6,7 +6,7 @@ use cosmic::{
 };
 use std::collections::HashMap;
 
-use crate::app::MenuAction;
+use crate::app::{MenuAction, ViewMode};
 
 pub fn key_binds() -> HashMap<KeyBind, MenuAction> {
     let mut key_binds = HashMap::new();
@@ -33,6 +33,25 @@ pub fn key_binds() -> HashMap<KeyBind, MenuAction> {
     bind!([], Key::Named(Named::F2), RenamePlaylist);
     bind!([Ctrl], Key::Named(Named::ArrowUp), MoveNavUp);
     bind!([Ctrl], Key::Named(Named::ArrowDown), MoveNavDown);
+    bind!([], Key::Named(Named::F1), TrackInfoPanel);
+    bind!([], Key::Character("m".into()), ToggleMute);
+    bind!([], Key::Character("-".into()), VolumeDown);
+    bind!([], Key::Character("=".into()), VolumeUp);
+
+    key_binds.insert(
+        KeyBind {
+            modifiers: vec![Modifier::Ctrl],
+            key: Key::Character("1".into()),
+        },
+        MenuAction::SetViewMode(ViewMode::List),
+    );
+    key_binds.insert(
+        KeyBind {
+            modifiers: vec![Modifier::Ctrl],
+            key: Key::Character("2".into()),
+        },
+        MenuAction::SetViewMode(ViewMode::Grid),
+    );
 
     key_binds
 }

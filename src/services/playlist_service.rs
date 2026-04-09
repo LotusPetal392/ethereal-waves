@@ -1,20 +1,9 @@
 use crate::app::PlaylistId;
 use crate::constants::PLAYLISTS_DIR;
-//use crate::library::MediaMetaData;
 use crate::playlist::{Playlist, Track};
 use anyhow::{Result, anyhow};
-//use std::collections::HashMap;
-use std::fs;
-//use std::path::PathBuf;
-use std::sync::Arc;
+use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 use xdg::BaseDirectories;
-
-// #[derive(Debug)]
-// pub enum PlaylistError {
-//     NotFound(u32),
-//     CannotModifyLibrary,
-//     AlreadyExists(String),
-// }
 
 pub struct PlaylistService {
     playlists: Vec<Playlist>,
@@ -38,7 +27,7 @@ impl PlaylistService {
         self.playlists.push(library);
 
         // Load user playlists
-        let playlist_dir = self.xdg_dirs.create_data_directory(PLAYLISTS_DIR)?;
+        let playlist_dir = self.playlist_dir()?;
 
         for entry in fs::read_dir(playlist_dir)? {
             let entry = entry?;
@@ -93,15 +82,40 @@ impl PlaylistService {
         }
 
         // Remove file
-        let filename = format!("{}.json", id);
-        let mut file_path = self.xdg_dirs.create_data_directory("playlists")?;
-        file_path.push(filename);
+        let file_path = self.playlist_file_path(id)?;
         fs::remove_file(file_path)?;
 
         // Remove from memory
         self.playlists.retain(|p| p.id() != id);
 
         Ok(())
+    }
+
+    /// Split tracks, existing and new
+    pub fn split_tracks_by_duplicate(
+        &self,
+        playlist_id: PlaylistId,
+        tracks: Vec<Track>,
+    ) -> Result<(Vec<Track>, Vec<Track>)> {
+        let playlist = self.get(playlist_id)?;
+        let mut seen: HashSet<_> = playlist
+            .tracks()
+            .iter()
+            .map(|track| track.path.clone())
+            .collect();
+
+        let mut new_tracks = Vec::new();
+        let mut duplicates = Vec::new();
+
+        for track in tracks {
+            if seen.insert(track.path.clone()) {
+                new_tracks.push(track);
+            } else {
+                duplicates.push(track);
+            }
+        }
+
+        Ok((new_tracks, duplicates))
     }
 
     /// Add tracks
@@ -126,8 +140,6 @@ impl PlaylistService {
         if playlist.is_library() {
             return Err(anyhow!("Cannot remove tracks from library"));
         }
-
-        playlist.remove_selected();
 
         playlist.remove_selected();
         self.save(playlist_id)?;
@@ -185,9 +197,7 @@ impl PlaylistService {
             return Ok(());
         }
 
-        let filename = format!("{}.json", id);
-        let mut file_path = self.xdg_dirs.create_data_directory("playlists")?;
-        file_path.push(filename);
+        let file_path = self.playlist_file_path(id)?;
 
         let content = serde_json::to_string_pretty(playlist)?;
         fs::write(file_path, content)?;
@@ -241,5 +251,15 @@ impl PlaylistService {
         let playlist = self.get_mut(playlist_id)?;
         playlist.select_range(start, end);
         Ok(())
+    }
+
+    fn playlist_dir(&self) -> Result<PathBuf> {
+        Ok(self.xdg_dirs.create_data_directory(PLAYLISTS_DIR)?)
+    }
+
+    fn playlist_file_path(&self, id: PlaylistId) -> Result<PathBuf> {
+        let mut file_path = self.playlist_dir()?;
+        file_path.push(format!("{id}.json"));
+        Ok(file_path)
     }
 }

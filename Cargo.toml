@@ -1,10 +1,10 @@
 [package]
 name = "ethereal-waves"
-version = "0.1.0"
+version = "0.3.1"
 edition = "2024"
 license = "GPL-3.0"
 description = "Ethereal Waves"
-repository = "https://github.com/LotusPetal392/ethereal-waves"
+repository = "https://github.com/cosmic-utils/ethereal-waves"
 
 [dependencies]
 anyhow = "1.0.100"
@@ -67,11 +67,6 @@ rfd = ["libcosmic/rfd"]
 xdg-portal = ["libcosmic/xdg-portal"]
 single-instance = ["libcosmic/single-instance"]
 
-# Uncomment to test a locally-cloned libcosmic
-# [patch.'https://github.com/pop-os/libcosmic']
-# libcosmic = { path = "../libcosmic" }
-# cosmic-config = { path = "../libcosmic/cosmic-config" }
-# cosmic-theme = { path = "../libcosmic/cosmic-theme" }
 
 [profile.dev]
 opt-level = 1

@@ -1,15 +1,12 @@
 # Ethereal Waves
 
-## This repository has moved
-All further development will be done at [https://github.com/cosmic-utils/ethereal-waves](https://github.com/cosmic-utils/ethereal-waves)
-
-
 A basic music player based on libcosmic. It's still very much a work in progress.
 
-![Ethereal Waves - Dark Mode](https://github.com/LotusPetal392/ethereal-waves/blob/b970a4506b73b681b760d581c70f30d3a7eeed4b/screenshots/Ethereal%20Waves%20-%20Dark%20Mode.png?raw=true)
-![Ethereal Waves - Light Mode](https://github.com/LotusPetal392/ethereal-waves/blob/b970a4506b73b681b760d581c70f30d3a7eeed4b/screenshots/Ethereal%20Waves%20-%20Light%20Mode.png?raw=true)
+![Ethereal Waves - Dark Mode](https://github.com/cosmic-utils/ethereal-waves/blob/e376ce81ddfe7b3fb4357b9e882d33586102b13b/screenshots/Ethereal%20Waves%20-%20Dark%20Mode.png?raw=true)
+![Ethereal Waves - Light Mode](https://github.com/cosmic-utils/ethereal-waves/blob/e376ce81ddfe7b3fb4357b9e882d33586102b13b/screenshots/Ethereal%20Waves%20-%20Light%20Mode.png?raw=true)
 
 ## Supported Formats
+
 - MP3
 - M4A
 - Ogg
@@ -18,21 +15,24 @@ A basic music player based on libcosmic. It's still very much a work in progress
 - Wav
 
 ## Planned Features
+
 Non-exhaustive list of planned features in no particular order:
-- Gapless playback
-- Grid view
-- More column options in list view
-- Export playlist as .m3u
-- Improved MPRIS support
-- Sorting options
-- Shuffle modes
-- Condensed responsive layout
-- More keyboard shortcuts
-- Drag and drop support
-- Playlist duplicate management
-- Partial update (Only add new tracks)
+
+- [x] Gapless playback
+- [ ] Crossfading between tracks
+- [x] Grid view
+- [x] More column options in list view (calling this complete for the time being)
+- [ ] Import / Export .m3u playlists
+- [ ] MPRIS support (much improved but not entirely complete)
+- [ ] Sorting options
+- [ ] Shuffle modes
+- [x] Condensed responsive layout (possibly may build on this later)
+- [x] Drag and drop support (your milage may vary outside of cosmic-comp)
+- [x] Playlist duplicate management
+- [ ] Partial update (Only add new tracks)
 
 ## Keybindings
+
 - `Ctrl + U`: Update Library
 - `Ctrl + Q`: Quit
 - `Ctrl + N`: New Playlist
@@ -46,15 +46,27 @@ Non-exhaustive list of planned features in no particular order:
 - `Ctrl + ,`: Settings
 - `Ctrl + A`: Select All
 - `Ctrl + click`: Select
-- `Ctrl + Shift + click`: Select Range
+- `Shift + click`: Select Range
+- `F1`: Track Info
+- `m`: Toggle Mute
+- `-`: Volume Down
+- `=`: Volume Up and Unmute
 
 ## Installation
+
 This project uses `just` for building. To run development mode:
+
 ```
 just run-dev
 ```
 
 To install:
+
 ```
-just install
+sudo apt install just
+```
+
+```
+just build-release
+sudo just install
 ```

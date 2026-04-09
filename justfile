@@ -1,7 +1,7 @@
 # Name of the application's binary.
 name := 'ethereal-waves'
 # The unique ID of the application.
-appid := 'com.github.LotusPetal392.ethereal-waves'
+appid := 'com.galacticpirateradio.ethereal-waves'
 
 # Path to root file system, which defaults to `/`.
 rootdir := ''
@@ -46,9 +46,6 @@ build-debug *args:
 # Compiles with release profile
 build-release *args: (build-debug '--release' args)
 
-# Compiles release profile with vendored dependencies
-build-vendored *args: vendor-extract (build-release '--frozen --offline' args)
-
 # Runs a clippy check
 check *args:
     cargo clippy --all-features {{ args }} -- -W clippy::pedantic
@@ -74,26 +71,3 @@ install:
 # Uninstalls installed files
 uninstall:
     rm {{ bin-dst }} {{ desktop-dst }} {{ icon-svg-dst / icon-svg }}
-
-# Vendor dependencies locally
-vendor:
-    mkdir -p .cargo
-    cargo vendor | head -n -1 > .cargo/config.toml
-    echo 'directory = "vendor"' >> .cargo/config.toml
-    tar pcf vendor.tar vendor
-    rm -rf vendor
-
-# Extracts vendored dependencies
-vendor-extract:
-    rm -rf vendor
-    tar pxf vendor.tar
-
-# Bump cargo version, create git commit, and create tag
-tag version:
-    find -type f -name Cargo.toml -exec sed -i '0,/^version/s/^version.*/version = "{{ version }}"/' '{}' \; -exec git add '{}' \;
-    cargo check
-    cargo clean
-    git add Cargo.lock
-    git commit -m 'release: {{ version }}'
-    git commit --amend
-    git tag -a {{ version }} -m ''

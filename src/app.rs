@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::config::{AppTheme, CONFIG_VERSION, Config, State};
+use crate::config::{
+    AppTheme, CONFIG_VERSION, Config, GridGroupBy, ListColumn, PlaylistDuplicatePolicy, State,
+    TitleSortMode,
+};
 use crate::constants::*;
 use crate::fl;
-use crate::footer::footer;
 use crate::helpers::*;
 use crate::image_store::ImageStore;
 use crate::key_bind::key_binds;
 use crate::library::Library;
-use crate::menu::menu_bar;
 use crate::mpris::{MediaPlayer2, MediaPlayer2Player, MprisCommand, MprisState};
-use crate::page::empty_library;
-use crate::page::list_view;
-use crate::page::loading;
+use crate::page::{empty_library, grid_view, list_view, loading};
 use crate::playback_state::{PlaybackStatus, RepeatMode};
 use crate::playlist::{Playlist, Track};
 use crate::services::library_service::{LibraryProgress, LibraryService};
 use crate::services::playback_service::{PlaybackEvent, PlaybackService};
 use crate::services::playlist_service::PlaylistService;
-use cosmic::iced_widget::scrollable::{self, AbsoluteOffset};
+use crate::ui::{footer::footer, menu::menu_bar};
+
 use cosmic::prelude::*;
 use cosmic::{
     Action,
@@ -29,15 +29,17 @@ use cosmic::{
     iced::{
         self, Alignment, Length, Size, Subscription,
         alignment::{Horizontal, Vertical},
+        clipboard::mime::{AllowedMimeTypes, AsMimeTypes},
         event::{self, Event},
         font::{Font, Weight},
         keyboard::{Event as KeyEvent, Key, Modifiers, key::Named},
         window::Event as WindowEvent,
     },
     iced_core::text::Wrapping,
-    theme,
+    iced_widget::scrollable::{self, AbsoluteOffset},
+    surface, theme,
     widget::{
-        self, Column,
+        self,
         about::About,
         menu::{self, Action as WidgetMenuAction},
         nav_bar, row, settings, text, toggler,
@@ -47,6 +49,8 @@ use cosmic::{
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::{
+    borrow::Cow,
+    cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     process,
@@ -60,10 +64,11 @@ use xdg::BaseDirectories;
 
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 const APP_ICON: &[u8] = include_bytes!(
-    "../resources/icons/hicolor/scalable/apps/com.github.LotusPetal392.ethereal-waves.svg"
+    "../resources/icons/hicolor/scalable/apps/com.galacticpirateradio.ethereal-waves.svg"
 );
 
 pub type PlaylistId = u32;
+pub type TrackId = String;
 
 /// The application model stores app-specific state used to describe its interface and
 /// drive its logic.
@@ -76,12 +81,16 @@ pub struct AppModel {
     about: About,
     /// Contains items assigned to the nav bar panel.
     nav: nav_bar::Model,
+    nav_dnd_id: widget::dnd_destination::DragId,
     /// Key bindings for the application's menu bar.
     pub key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// Configuration data that persists between application runs.
     pub config: Config,
     /// Settings page / app theme dropdown labels
     app_theme_labels: Vec<String>,
+    title_sort_labels: Vec<String>,
+    playlist_duplicate_policy_lables: Vec<String>,
+
     pub is_condensed: bool,
 
     config_handler: Option<cosmic_config::Config>,
@@ -106,12 +115,14 @@ pub struct AppModel {
 
     dialog_pages: DialogPages,
 
-    view_mode: ViewMode,
-
-    size_multiplier: f32,
+    list_size_multiplier: f32,
+    grid_size_multiplier: f32,
     pub list_scroll_id: widget::Id,
     pub list_start: usize,
     pub list_visible_row_count: usize,
+    grid_start: usize,
+    view_cache: RefCell<Option<CachedViewBase>>,
+    grid_card_cache: RefCell<Option<CachedGridCardBase>>,
     list_last_clicked: Option<Instant>,
     list_last_selected_id: Option<usize>,
 
@@ -129,6 +140,7 @@ pub struct AppModel {
 
     mpris_state: Arc<Mutex<MprisState>>,
     mpris_connection: Option<zbus::Connection>,
+    mpris_connection_rx: Option<std::sync::mpsc::Receiver<Result<zbus::Connection, String>>>,
 }
 
 /// Messages emitted by the application and its widgets.
@@ -139,24 +151,35 @@ pub enum Message {
     AddNowPlayingToPlaylist(PlaylistId),
     AppTheme(AppTheme),
     CancelLibraryUpdate,
-    ChangeTrack(String, usize),
+    ChangeTrack(usize),
+    ChangeTracks(Arc<Vec<usize>>),
     DeletePlaylist,
     DialogCancel,
     DialogComplete,
-    KeyPressed(Modifiers, Key),
+    KeyPressed(Modifiers, Key, event::Status),
     KeyReleased(Key),
     LaunchUrl(String),
     LibraryPathOpenError(Arc<file_chooser::Error>),
     LibraryProgress(LibraryProgress),
+    GridViewScroll(scrollable::Viewport),
+    GridViewGroupBy(GridGroupBy),
+    GridViewSort(SortBy),
+    GridViewSortDirection(SortDirection),
     ListSelectRow(usize),
+    ListSelectRows(Arc<Vec<usize>>),
     ListViewScroll(scrollable::Viewport),
     ListViewSort(SortBy),
+    MoveListColumnDown(ListColumn),
+    MoveListColumnUp(ListColumn),
     MoveNavDown,
     MoveNavUp,
+    NavDrop(nav_bar::Id, TrackDropData),
     NewPlaylist,
     Next,
     Noop,
     PlayPause,
+    PlaylistDuplicateDialogAction(PlaylistDuplicateDialogAction),
+    PlaylistDuplicatePolicy(PlaylistDuplicatePolicy),
     Previous,
     Quit,
     ReleaseSlider,
@@ -167,13 +190,28 @@ pub enum Message {
     SearchClear,
     SearchInput(String),
     SelectAll,
+    SetViewMode(ViewMode),
     SelectedPaths(Vec<String>),
     SetVolume(i32),
     SliderSeek(f32),
+    Surface(surface::Action),
     Tick,
+    TitleSort(TitleSortMode),
     ToggleContextPage(ContextPage),
+    ToggleListAlbumArtistColumn(bool),
+    ToggleListAlbumColumn(bool),
+    ToggleListArtistColumn(bool),
+    ToggleListDiscNumberColumn(bool),
+    ToggleListDiscTotalColumn(bool),
+    ToggleListDurationColumn(bool),
+    ToggleListFilePathColumn(bool),
+    ToggleListGenreColumn(bool),
     ToggleListRowAlignTop(bool),
     ToggleListTextWrap(bool),
+    ToggleSortCaseSensitive(bool),
+    ToggleListTitleColumn(bool),
+    ToggleListTrackNumberColumn(bool),
+    ToggleListTrackTotalColumn(bool),
     ToggleMute,
     ToggleRepeat,
     ToggleRepeatMode,
@@ -181,13 +219,15 @@ pub enum Message {
     UpdateConfig(Config),
     UpdateDialog(DialogPage),
     UpdateLibrary,
+    VolumeDown,
+    VolumeUp,
     WindowResized(Size),
     ZoomIn,
     ZoomOut,
 }
 
 /// Unique identifier in RDNN (reverse domain name notation) format.
-pub const APP_ID: &'static str = "com.github.LotusPetal392.ethereal-waves";
+pub const APP_ID: &'static str = "com.galacticpirateradio.ethereal-waves";
 
 /// Create a COSMIC application from the app model
 impl cosmic::Application for AppModel {
@@ -234,32 +274,11 @@ impl cosmic::Application for AppModel {
         let (conn_tx, conn_rx) = std::sync::mpsc::sync_channel(1);
 
         tokio::spawn(async move {
-            let connection = zbus::Connection::session().await.unwrap();
-            connection
-                .object_server()
-                .at("/org/mpris/MediaPlayer2", MediaPlayer2)
-                .await
-                .unwrap();
-            connection
-                .object_server()
-                .at(
-                    "/org/mpris/MediaPlayer2",
-                    MediaPlayer2Player {
-                        tx: mpris_tx,
-                        state: mpris_state_clone,
-                    },
-                )
-                .await
-                .unwrap();
-            connection
-                .request_name("org.mpris.MediaPlayer2.ethereal-waves")
-                .await
-                .unwrap();
-            let _ = conn_tx.send(connection.clone());
-            futures::future::pending::<()>().await;
+            let result = AppModel::init_mpris_connection(mpris_tx, mpris_state_clone).await;
+            let _ = conn_tx.send(result);
         });
 
-        let mpris_connection = conn_rx.recv().ok();
+        let mpris_connection = None;
 
         let app_xdg_dirs = xdg::BaseDirectories::with_prefix("ethereal-waves");
 
@@ -275,6 +294,7 @@ impl cosmic::Application for AppModel {
             context_page: ContextPage::default(),
             about,
             nav,
+            nav_dnd_id: widget::dnd_destination::DragId::new(),
             key_binds: key_binds(),
             config: cosmic_config::Config::new(APP_ID, CONFIG_VERSION)
                 .map(|context| match Config::get_entry(&context) {
@@ -283,6 +303,8 @@ impl cosmic::Application for AppModel {
                 })
                 .unwrap_or_default(),
             app_theme_labels: vec![fl!("match-desktop"), fl!("dark"), fl!("light")],
+            title_sort_labels: vec![fl!("alphabetical"), fl!("track-number")],
+            playlist_duplicate_policy_lables: vec![fl!("allow"), fl!("disallow"), fl!("ask")],
             is_condensed: false,
             config_handler: _flags.config_handler,
             state_handler: _flags.state_handler,
@@ -293,6 +315,7 @@ impl cosmic::Application for AppModel {
             playback_service: PlaybackService::new(mpris_rx),
             mpris_state,
             mpris_connection,
+            mpris_connection_rx: Some(conn_rx),
             initial_load_complete: false,
             library: Library::new(),
             is_updating: false,
@@ -301,11 +324,14 @@ impl cosmic::Application for AppModel {
             update_percent: 0.0,
             update_progress_display: "0".into(),
             dialog_pages: DialogPages::new(),
-            view_mode: ViewMode::List,
-            size_multiplier: _flags.state.size_multiplier,
+            list_size_multiplier: _flags.state.effective_list_size_multiplier(),
+            grid_size_multiplier: _flags.state.effective_grid_size_multiplier(),
             list_scroll_id: widget::Id::unique(),
             list_start: 0,
             list_visible_row_count: 0,
+            grid_start: 0,
+            view_cache: RefCell::new(None),
+            grid_card_cache: RefCell::new(None),
             list_last_clicked: None,
             list_last_selected_id: None,
             control_pressed: 0,
@@ -316,6 +342,9 @@ impl cosmic::Application for AppModel {
             image_store: ImageStore::new(artwork_dir.clone()),
             playlist_service: PlaylistService::new(Arc::new(app_xdg_dirs.clone())),
         };
+
+        // Apply persisted output state to the playback engine before any session starts.
+        app.sync_playback_output_from_state();
 
         // Create a startup command that sets the window title.
         let update_title = app.update_title();
@@ -397,10 +426,13 @@ impl cosmic::Application for AppModel {
 
         let playlist = self.playlist_service.get(self.view_playlist.unwrap()).ok();
 
-        let content: Column<_> = match playlist {
-            Some(p) if p.is_library() && p.tracks().is_empty() => empty_library::content(),
-            Some(_) => list_view::content(self),
-            None => empty_library::content(),
+        let content: Element<_> = match playlist {
+            Some(p) if p.is_library() && p.tracks().is_empty() => empty_library::content().into(),
+            Some(_) => match self.config.view_mode {
+                ViewMode::List => list_view::content(self).into(),
+                ViewMode::Grid => grid_view::content(self),
+            },
+            None => empty_library::content().into(),
         };
 
         widget::container(widget::column().push(content))
@@ -414,15 +446,14 @@ impl cosmic::Application for AppModel {
 
     fn dialog(&self) -> Option<Element<'_, Self::Message>> {
         let dialog_page = self.dialog_pages.front()?;
+        let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
 
         let dialog = match dialog_page {
             DialogPage::NewPlaylist(name) => {
-                let complete_maybe = if name.is_empty() {
-                    None
-                } else if name.trim().is_empty() {
-                    None
-                } else {
+                let complete_maybe = if Self::playlist_name_is_valid(name) {
                     Some(Message::DialogComplete)
+                } else {
+                    None
                 };
 
                 let dialog = widget::dialog()
@@ -446,12 +477,10 @@ impl cosmic::Application for AppModel {
             }
 
             DialogPage::RenamePlaylist { id, name } => {
-                let complete_maybe = if name.is_empty() {
-                    None
-                } else if name.trim().is_empty() {
-                    None
-                } else {
+                let complete_maybe = if Self::playlist_name_is_valid(name) {
                     Some(Message::DialogComplete)
+                } else {
+                    None
                 };
 
                 let dialog = widget::dialog()
@@ -521,6 +550,51 @@ impl cosmic::Application for AppModel {
 
                 dialog
             }
+
+            DialogPage::ConfirmPlaylistDuplicate {
+                destination_id,
+                tracks,
+            } => {
+                let track = tracks.front().unwrap();
+                let destination_name = self
+                    .playlist_service
+                    .get(*destination_id)
+                    .map(|playlist| playlist.name().to_string())
+                    .unwrap_or_else(|_| fl!("playlist"));
+
+                let dialog = widget::dialog()
+                    .title(fl!("playlist-duplicate"))
+                    .icon(widget::icon::from_name("dialog-question").size(64))
+                    .tertiary_action(
+                        widget::row()
+                            .spacing(space_xxs)
+                            .push(widget::button::standard(fl!("yes-to-all")).on_press(
+                                Message::PlaylistDuplicateDialogAction(
+                                    PlaylistDuplicateDialogAction::YesToAll,
+                                ),
+                            ))
+                            .push(widget::button::standard(fl!("no-to-all")).on_press(
+                                Message::PlaylistDuplicateDialogAction(
+                                    PlaylistDuplicateDialogAction::NoToAll,
+                                ),
+                            )),
+                    )
+                    .secondary_action(widget::button::standard(fl!("skip")).on_press(
+                        Message::PlaylistDuplicateDialogAction(PlaylistDuplicateDialogAction::Skip),
+                    ))
+                    .primary_action(widget::button::suggested(fl!("add")).on_press(
+                        Message::PlaylistDuplicateDialogAction(PlaylistDuplicateDialogAction::Add),
+                    ))
+                    .control(widget::column::with_children(vec![
+                        track_info_row(fl!("playlist"), destination_name).into(),
+                        track_info_row(fl!("file"), Self::duplicate_track_display_name(track))
+                            .into(),
+                        widget::text(track.path.display().to_string()).into(),
+                        widget::text(fl!("add-duplicate-anyway")).into(),
+                    ]));
+
+                dialog
+            }
         };
 
         Some(dialog.into())
@@ -535,9 +609,9 @@ impl cosmic::Application for AppModel {
     fn subscription(&self) -> Subscription<Self::Message> {
         // Add subscriptions which are always active.
         let mut subscriptions = vec![
-            event::listen_with(|event, _status, _window_id| match event {
+            event::listen_with(|event, status, _window_id| match event {
                 Event::Keyboard(KeyEvent::KeyPressed { key, modifiers, .. }) => {
-                    Some(Message::KeyPressed(modifiers, key))
+                    Some(Message::KeyPressed(modifiers, key, status))
                 }
                 Event::Keyboard(KeyEvent::KeyReleased { key, .. }) => {
                     Some(Message::KeyReleased(key))
@@ -615,7 +689,7 @@ impl cosmic::Application for AppModel {
                     None => {
                         self.state.$name = $value;
                         log::warn!(
-                            "failed to save state {:?}: no config handler",
+                            "failed to save state {:?}: no state (config) handler",
                             stringify!($name)
                         );
                     }
@@ -667,18 +741,15 @@ impl cosmic::Application for AppModel {
                         .map(|t| {
                             let mut track = (*t).clone();
                             track.selected = false;
+                            track.generate_entry_id();
+                            track.update_date_added();
                             track
                         })
                         .collect(),
                     Err(_) => return Task::none(),
                 };
 
-                if let Err(err) = self
-                    .playlist_service
-                    .add_tracks(destination_id, selected_tracks)
-                {
-                    eprintln!("Error adding tracks: {}", err);
-                }
+                self.add_tracks_to_playlist_with_duplicate_policy(destination_id, selected_tracks);
             }
 
             Message::AddNowPlayingToPlaylist(destination_id) => {
@@ -693,12 +764,10 @@ impl cosmic::Application for AppModel {
                             ..Default::default()
                         };
 
-                        if let Err(err) = self
-                            .playlist_service
-                            .add_tracks(destination_id, vec![track])
-                        {
-                            eprintln!("Error adding now playing to playlist: {}", err);
-                        }
+                        self.add_tracks_to_playlist_with_duplicate_policy(
+                            destination_id,
+                            vec![track],
+                        );
                     }
                 }
             }
@@ -710,8 +779,24 @@ impl cosmic::Application for AppModel {
                 }
             }
 
-            Message::ChangeTrack(id, index) => {
-                if self.library.from_id(&id).is_none() {
+            Message::ChangeTrack(index) => {
+                let Some(playlist_id) = self.view_playlist else {
+                    return Task::none();
+                };
+
+                let is_in_library = {
+                    let Ok(playlist) = self.playlist_service.get(playlist_id) else {
+                        return Task::none();
+                    };
+
+                    let Some(track) = playlist.tracks().get(index) else {
+                        return Task::none();
+                    };
+
+                    self.library.media.contains_key(&track.path)
+                };
+
+                if !is_in_library {
                     return Task::none();
                 }
 
@@ -719,16 +804,50 @@ impl cosmic::Application for AppModel {
 
                 if let Some(last) = self.list_last_clicked {
                     if is_double_click(last, DOUBLE_CLICK_THRESHOLD_MS) {
-                        // Double-click: play track
-                        if let Some(playlist_id) = self.view_playlist {
-                            if let Ok(playlist) = self.playlist_service.get(playlist_id) {
+                        let mut started = false;
+                        if let Ok(playlist) = self.playlist_service.get(playlist_id) {
+                            self.playback_service.start_session(
+                                playlist,
+                                index,
+                                self.state.shuffle,
+                            );
+                            started = true;
+                        }
+                        if started {
+                            self.sync_playback_output_from_state();
+                            self.playback_service.play();
+                        }
+                    }
+                }
+
+                self.list_last_clicked = Some(now);
+            }
+
+            Message::ChangeTracks(indices) => {
+                let Some(playlist_id) = self.view_playlist else {
+                    return Task::none();
+                };
+
+                let now = Instant::now();
+
+                if let Some(last) = self.list_last_clicked {
+                    if is_double_click(last, DOUBLE_CLICK_THRESHOLD_MS) {
+                        let mut started = false;
+                        if let Ok(playlist) = self.playlist_service.get(playlist_id) {
+                            if let Some(index) =
+                                self.pick_group_playback_index(playlist, indices.as_ref())
+                            {
                                 self.playback_service.start_session(
                                     playlist,
                                     index,
                                     self.state.shuffle,
                                 );
-                                self.playback_service.play();
+                                started = true;
                             }
+                        }
+                        if started {
+                            self.sync_playback_output_from_state();
+                            self.playback_service.play();
                         }
                     }
                 }
@@ -741,77 +860,114 @@ impl cosmic::Application for AppModel {
             }
 
             Message::DialogComplete => {
-                if let Some(dialog_page) = self.dialog_pages.pop_front() {
-                    match dialog_page {
-                        DialogPage::NewPlaylist(name) => {
-                            match self.playlist_service.create(name) {
-                                Ok(id) => {
-                                    self.view_playlist = Some(id);
+                let Some(dialog_page) = self.dialog_pages.front().cloned() else {
+                    return Task::none();
+                };
 
-                                    // Rebuild nav preserving order
-                                    let items = self.build_ordered_nav_items();
-                                    self.rebuild_nav_from_order(items, id);
-                                }
-                                Err(err) => {
-                                    eprintln!("Error creating playlist: {}", err);
-                                }
+                match &dialog_page {
+                    DialogPage::NewPlaylist(name) if !Self::playlist_name_is_valid(name) => {
+                        return Task::none();
+                    }
+                    DialogPage::RenamePlaylist { name, .. }
+                        if !Self::playlist_name_is_valid(name) =>
+                    {
+                        return Task::none();
+                    }
+                    DialogPage::ConfirmPlaylistDuplicate { .. } => {
+                        self.handle_playlist_duplicate_dialog_action(
+                            PlaylistDuplicateDialogAction::Add,
+                        );
+                        return Task::none();
+                    }
+                    _ => {}
+                }
+
+                let _ = self.dialog_pages.pop_front();
+
+                match dialog_page {
+                    DialogPage::NewPlaylist(name) => {
+                        match self.playlist_service.create(name) {
+                            Ok(id) => {
+                                self.view_playlist = Some(id);
+
+                                // Rebuild nav preserving order
+                                let items = self.build_ordered_nav_items();
+                                self.rebuild_nav_from_order(items, id);
+                            }
+                            Err(err) => {
+                                eprintln!("Error creating playlist: {}", err);
                             }
                         }
+                    }
 
-                        DialogPage::RenamePlaylist { id, name } => {
-                            match self.playlist_service.rename(id, name) {
-                                Ok(_) => {
-                                    self.view_playlist = Some(id);
+                    DialogPage::RenamePlaylist { id, name } => {
+                        match self.playlist_service.rename(id, name) {
+                            Ok(_) => {
+                                self.view_playlist = Some(id);
 
-                                    // Rebuild nav preserving order
-                                    let items = self.build_ordered_nav_items();
-                                    self.rebuild_nav_from_order(items, id);
-                                }
-                                Err(err) => {
-                                    eprintln!("Error renaming playlist: {}", err);
-                                }
+                                // Rebuild nav preserving order
+                                let items = self.build_ordered_nav_items();
+                                self.rebuild_nav_from_order(items, id);
+                            }
+                            Err(err) => {
+                                eprintln!("Error renaming playlist: {}", err);
                             }
                         }
+                    }
 
-                        DialogPage::DeletePlaylist(id) => {
-                            match self.playlist_service.delete(id) {
-                                Ok(_) => {
-                                    // Switch to library view
-                                    let library_id =
-                                        if let Ok(library) = self.playlist_service.get_library() {
-                                            library.id()
-                                        } else {
-                                            return Task::none();
-                                        };
+                    DialogPage::DeletePlaylist(id) => {
+                        match self.playlist_service.delete(id) {
+                            Ok(_) => {
+                                // Switch to library view
+                                let library_id =
+                                    if let Ok(library) = self.playlist_service.get_library() {
+                                        library.id()
+                                    } else {
+                                        return Task::none();
+                                    };
 
-                                    self.view_playlist = Some(library_id);
+                                self.view_playlist = Some(library_id);
 
-                                    // Rebuild nav preserving order
-                                    let items = self.build_ordered_nav_items();
-                                    self.rebuild_nav_from_order(items, library_id);
-                                }
-                                Err(err) => {
-                                    eprintln!("Error deleting playlist: {}", err);
-                                }
+                                // Rebuild nav preserving order
+                                let items = self.build_ordered_nav_items();
+                                self.rebuild_nav_from_order(items, library_id);
+                            }
+                            Err(err) => {
+                                eprintln!("Error deleting playlist: {}", err);
                             }
                         }
+                    }
 
-                        DialogPage::DeleteSelectedFromPlaylist => {
-                            let playlist_id = match self.view_playlist {
-                                Some(id) => id,
-                                None => return Task::none(),
-                            };
+                    DialogPage::DeleteSelectedFromPlaylist => {
+                        let playlist_id = match self.view_playlist {
+                            Some(id) => id,
+                            None => return Task::none(),
+                        };
 
-                            if let Err(err) = self.playlist_service.remove_selected(playlist_id) {
-                                eprintln!("Error removing tracks: {}", err);
-                            }
+                        if let Err(err) = self.playlist_service.remove_selected(playlist_id) {
+                            eprintln!("Error removing tracks: {}", err);
                         }
-                    };
+
+                        self.invalidate_all_caches();
+
+                        // Reset viewport scroll to top
+                        self.list_start = 0;
+                        self.grid_start = 0;
+                        return scrollable::scroll_to(
+                            self.list_scroll_id.clone(),
+                            AbsoluteOffset {
+                                x: Some(0.0 as f32),
+                                y: Some(0.0 as f32),
+                            },
+                        );
+                    }
+
+                    DialogPage::ConfirmPlaylistDuplicate { .. } => {}
                 };
             }
 
-            Message::KeyPressed(modifiers, key) => {
-                return self.handle_key_pressed(modifiers, key);
+            Message::KeyPressed(modifiers, key, status) => {
+                return self.handle_key_pressed(modifiers, key, status);
             }
 
             Message::KeyReleased(key) => {
@@ -855,11 +1011,16 @@ impl cosmic::Application for AppModel {
 
                 LibraryProgress::Complete(library) => {
                     self.library = library;
-                    if let Err(e) = self.library_service.save(&self.library) {
+                    let save_result = self.library_service.save(&self.library);
+                    self.update_library_playlist();
+
+                    if let Err(e) = save_result {
                         eprintln!("Error saving library: {}", e);
+                    } else {
+                        let artwork_filenames = self.artwork_filenames_in_use();
+                        self.image_store.cleanup_unused(&artwork_filenames);
                     }
                     self.is_updating = false;
-                    self.update_library_playlist();
                 }
 
                 LibraryProgress::Cancelled => {
@@ -869,20 +1030,85 @@ impl cosmic::Application for AppModel {
                 }
             },
 
+            Message::GridViewScroll(viewport) => {
+                let scroll_offset = viewport.absolute_offset().y;
+                let viewport_height = viewport.bounds().height;
+                let viewport_width = viewport.bounds().width;
+                let layout = self.grid_layout_metrics(viewport_width);
+
+                let requested_grid_start = if scroll_offset == 0.0 || layout.row_stride == 0.0 {
+                    0
+                } else {
+                    (scroll_offset / layout.row_stride).floor() as usize
+                };
+
+                let visible_row_count =
+                    Self::grid_visible_row_count_for_stride(viewport_height, layout.row_stride);
+                let visible_card_count = self.visible_grid_card_count();
+                let total_rows = Self::grid_total_rows(visible_card_count, layout.column_count);
+                let max_start = total_rows.saturating_sub(visible_row_count.max(1));
+                let clamped_grid_start = requested_grid_start.min(max_start);
+                self.grid_start = clamped_grid_start;
+
+                if layout.row_stride > 0.0 && clamped_grid_start != requested_grid_start {
+                    return scrollable::scroll_to(
+                        self.list_scroll_id.clone(),
+                        AbsoluteOffset {
+                            x: Some(0.0),
+                            y: Some(clamped_grid_start as f32 * layout.row_stride),
+                        },
+                    );
+                }
+            }
+
+            Message::GridViewGroupBy(group_by) => {
+                if self.config.grid_group_by == group_by {
+                    return Task::none();
+                }
+
+                config_set!(grid_group_by, group_by);
+                self.config.grid_group_by = group_by;
+                self.grid_start = 0;
+
+                return scrollable::scroll_to(
+                    self.list_scroll_id.clone(),
+                    AbsoluteOffset {
+                        x: Some(0.0),
+                        y: Some(0.0),
+                    },
+                );
+            }
+
+            Message::GridViewSort(sort_by) => {
+                if self.state.sort_by == sort_by {
+                    return Task::none();
+                }
+
+                state_set!(sort_by, sort_by);
+                self.sort_all_playlists();
+            }
+
+            Message::GridViewSortDirection(direction) => {
+                if self.state.sort_direction == direction {
+                    return Task::none();
+                }
+
+                state_set!(sort_direction, direction);
+                self.sort_all_playlists();
+            }
+
             Message::ListSelectRow(index) => {
                 let Some(playlist_id) = self.view_playlist else {
                     return Task::none();
                 };
 
-                if self.control_pressed > 0 && self.shift_pressed > 0 {
-                    // Ctrl + Shift + Click: select range
+                if self.shift_pressed > 0 {
                     if let Some(last_id) = self.list_last_selected_id {
                         let _ = self
                             .playlist_service
                             .select_range(playlist_id, last_id, index);
                     }
                 } else if self.control_pressed > 0 {
-                    // Ctrl + Click: toggle selection
                     let Ok(playlist) = self.playlist_service.get(playlist_id) else {
                         return Task::none();
                     };
@@ -895,43 +1121,109 @@ impl cosmic::Application for AppModel {
 
                     self.list_last_selected_id = Some(index);
                 } else {
-                    // Click: clear all and select one
                     let _ = self.playlist_service.clear_selection(playlist_id);
                     let _ = self.playlist_service.select_track(playlist_id, index);
-
-                    // TODO: Handle double click for playback
-
                     self.list_last_selected_id = Some(index);
                 }
+
+                self.invalidate_view_cache();
             }
 
+            Message::ListSelectRows(indices) => {
+                let Some(playlist_id) = self.view_playlist else {
+                    return Task::none();
+                };
+
+                if indices.is_empty() {
+                    return Task::none();
+                }
+
+                let primary_index = indices[0];
+
+                if self.shift_pressed > 0 {
+                    if let Some(last_id) = self.list_last_selected_id {
+                        let _ =
+                            self.playlist_service
+                                .select_range(playlist_id, last_id, primary_index);
+                    }
+
+                    for &index in indices.iter() {
+                        let _ = self.playlist_service.select_track(playlist_id, index);
+                    }
+                } else if self.control_pressed > 0 {
+                    let should_deselect = {
+                        let Ok(playlist) = self.playlist_service.get(playlist_id) else {
+                            return Task::none();
+                        };
+
+                        indices.iter().all(|&index| {
+                            playlist
+                                .tracks()
+                                .get(index)
+                                .map(|track| track.selected)
+                                .unwrap_or(false)
+                        })
+                    };
+
+                    for &index in indices.iter() {
+                        let _ = if should_deselect {
+                            self.playlist_service.deselect_track(playlist_id, index)
+                        } else {
+                            self.playlist_service.select_track(playlist_id, index)
+                        };
+                    }
+                } else {
+                    let _ = self.playlist_service.clear_selection(playlist_id);
+                    for &index in indices.iter() {
+                        let _ = self.playlist_service.select_track(playlist_id, index);
+                    }
+                }
+
+                self.list_last_selected_id = Some(primary_index);
+                self.invalidate_view_cache();
+            }
+
+            // Handle scroll events from scrollable widgets
             // Handle scroll events from scrollable widgets
             Message::ListViewScroll(viewport) => {
                 let scroll_offset = viewport.absolute_offset().y;
                 let viewport_height = viewport.bounds().height;
 
-                let row_stride =
-                    calculate_row_stride(self.size_multiplier, BASE_ROW_HEIGHT, DIVIDER_HEIGHT);
+                let row_stride = calculate_row_stride(
+                    self.list_size_multiplier,
+                    BASE_ROW_HEIGHT,
+                    DIVIDER_HEIGHT,
+                );
 
-                // Update scroll position
-                if scroll_offset == 0.0 || row_stride == 0.0 {
-                    self.list_start = 0;
+                let requested_list_start = if scroll_offset == 0.0 || row_stride == 0.0 {
+                    0
                 } else {
-                    self.list_start = (scroll_offset / row_stride).floor() as usize;
-                }
+                    (scroll_offset / row_stride).floor() as usize
+                };
 
                 // Update visible row count
-                self.list_visible_row_count = (viewport_height / row_stride).ceil() as usize;
+                self.list_visible_row_count = if row_stride == 0.0 {
+                    0
+                } else {
+                    (viewport_height / row_stride).ceil() as usize
+                };
 
-                // Clamp to valid range
-                let tracks_len = self
-                    .view_playlist
-                    .and_then(|id| self.playlist_service.get(id).ok())
-                    .map(|p| p.len())
-                    .unwrap_or(0);
+                // Clamp to the filtered track count so the scroll state matches the rendered list.
+                let visible_track_count = self.visible_track_count();
+                let max_start =
+                    Self::max_list_start(visible_track_count, self.list_visible_row_count);
+                let clamped_list_start = requested_list_start.min(max_start);
+                self.list_start = clamped_list_start;
 
-                let max_start = tracks_len.saturating_sub(self.list_visible_row_count);
-                self.list_start = self.list_start.min(max_start);
+                if row_stride > 0.0 && clamped_list_start != requested_list_start {
+                    return scrollable::scroll_to(
+                        self.list_scroll_id.clone(),
+                        AbsoluteOffset {
+                            x: Some(0.0),
+                            y: Some(clamped_list_start as f32 * row_stride),
+                        },
+                    );
+                }
             }
 
             Message::ListViewSort(new_sort_by) => {
@@ -944,18 +1236,51 @@ impl cosmic::Application for AppModel {
                     SortDirection::Ascending
                 };
 
-                state_set!(sort_by, new_sort_by.clone());
-                state_set!(sort_direction, new_direction.clone());
+                state_set!(sort_by, new_sort_by);
+                state_set!(sort_direction, new_direction);
+                self.sort_all_playlists();
+            }
 
-                // Sort ALL playlists (including library)
-                let playlist_ids: Vec<u32> =
-                    self.playlist_service.all().iter().map(|p| p.id()).collect();
+            Message::MoveListColumnUp(column) => {
+                let mut list_column_order = self.config.normalized_list_column_order();
 
-                for id in playlist_ids {
-                    if let Ok(playlist) = self.playlist_service.get_mut(id) {
-                        playlist.sort(new_sort_by.clone(), new_direction.clone());
-                    }
+                let Some(index) = list_column_order
+                    .iter()
+                    .position(|current_column| *current_column == column)
+                else {
+                    return Task::none();
+                };
+
+                let Some(new_index) = index.checked_add_signed(-1) else {
+                    return Task::none();
+                };
+
+                list_column_order.swap(index, new_index);
+                self.config.list_column_order = list_column_order.clone();
+                config_set!(list_column_order, list_column_order);
+            }
+
+            Message::MoveListColumnDown(column) => {
+                let mut list_column_order = self.config.normalized_list_column_order();
+
+                let Some(index) = list_column_order
+                    .iter()
+                    .position(|current_column| *current_column == column)
+                else {
+                    return Task::none();
+                };
+
+                let Some(new_index) = index.checked_add_signed(1) else {
+                    return Task::none();
+                };
+
+                if new_index >= list_column_order.len() {
+                    return Task::none();
                 }
+
+                list_column_order.swap(index, new_index);
+                self.config.list_column_order = list_column_order.clone();
+                config_set!(list_column_order, list_column_order);
             }
 
             Message::LaunchUrl(url) => match open::that_detached(&url) {
@@ -1013,9 +1338,67 @@ impl cosmic::Application for AppModel {
                 state_set!(playlist_nav_order, order);
             }
 
+            Message::NavDrop(entity, data) => {
+                let Some(Page::Playlist(destination_id)) = self.nav.data(entity) else {
+                    return Task::none();
+                };
+
+                let source_tracks = self
+                    .view_playlist
+                    .and_then(|source_id| self.playlist_service.get(source_id).ok())
+                    .map(|playlist| {
+                        playlist
+                            .tracks()
+                            .iter()
+                            .map(|t| (t.instance_id(), t.clone()))
+                            .collect::<HashMap<String, Track>>()
+                    })
+                    .unwrap_or_default();
+
+                let dragged_tracks: Vec<Track> = data
+                    .track_ids
+                    .into_iter()
+                    .filter_map(|id| {
+                        source_tracks.get(&id).cloned().or_else(|| {
+                            id.strip_prefix(LIBRARY_TRACK_DROP_PREFIX)
+                                .and_then(|library_id| {
+                                    self.library.from_id(&library_id.to_string()).map(
+                                        |(path, metadata)| Track {
+                                            path: path.clone(),
+                                            metadata: metadata.clone(),
+                                            ..Default::default()
+                                        },
+                                    )
+                                })
+                        })
+                    })
+                    .map(|mut track| {
+                        track.selected = false;
+                        track.generate_entry_id();
+                        track.update_date_added();
+                        track
+                    })
+                    .collect();
+
+                if dragged_tracks.is_empty() {
+                    return Task::none();
+                }
+
+                self.add_tracks_to_playlist_with_duplicate_policy(*destination_id, dragged_tracks);
+            }
+
             Message::Next => {
                 self.playback_service
                     .next(self.state.repeat_mode.clone(), self.state.repeat);
+            }
+
+            Message::PlaylistDuplicatePolicy(playlist_duplicate_policy) => {
+                config_set!(playlist_duplicate_policy, playlist_duplicate_policy);
+                self.config.playlist_duplicate_policy = playlist_duplicate_policy;
+            }
+
+            Message::PlaylistDuplicateDialogAction(action) => {
+                self.handle_playlist_duplicate_dialog_action(action);
             }
 
             Message::PlayPause => {
@@ -1023,6 +1406,7 @@ impl cosmic::Application for AppModel {
                     PlaybackStatus::Stopped => {
                         // Start playback from current view
                         if let Some(playlist_id) = self.view_playlist {
+                            let mut started = false;
                             if let Ok(playlist) = self.playlist_service.get(playlist_id) {
                                 // Pick random starting index if shuffle is enabled
                                 let start_index =
@@ -1038,6 +1422,11 @@ impl cosmic::Application for AppModel {
                                     start_index,
                                     self.state.shuffle,
                                 );
+                                started = true;
+                            }
+
+                            if started {
+                                self.sync_playback_output_from_state();
                                 self.playback_service.play();
                             }
                         }
@@ -1088,9 +1477,13 @@ impl cosmic::Application for AppModel {
 
                 // Reset viewport scroll to top
                 self.list_start = 0;
+                self.grid_start = 0;
                 return scrollable::scroll_to(
                     self.list_scroll_id.clone(),
-                    AbsoluteOffset { x: 0.0, y: 0.0 },
+                    AbsoluteOffset {
+                        x: Some(0.0 as f32),
+                        y: Some(0.0 as f32),
+                    },
                 );
             }
 
@@ -1099,9 +1492,13 @@ impl cosmic::Application for AppModel {
 
                 // Reset viewport scroll to top
                 self.list_start = 0;
+                self.grid_start = 0;
                 return scrollable::scroll_to(
                     self.list_scroll_id.clone(),
-                    AbsoluteOffset { x: 0.0, y: 0.0 },
+                    AbsoluteOffset {
+                        x: Some(0.0 as f32),
+                        y: Some(0.0 as f32),
+                    },
                 );
             }
 
@@ -1111,6 +1508,31 @@ impl cosmic::Application for AppModel {
                         eprintln!("Error selecting all tracks: {}", err);
                     }
                 }
+
+                self.invalidate_view_cache();
+            }
+
+            Message::SetViewMode(view_mode) => {
+                if self.config.view_mode != view_mode {
+                    config_set!(view_mode, view_mode);
+                }
+                self.config.view_mode = view_mode;
+
+                let scroll_offset = match view_mode {
+                    ViewMode::List => self
+                        .calculate_list_view()
+                        .map(|view_model| view_model.scroll_offset),
+                    ViewMode::Grid => Some(self.grid_start as f32 * self.grid_row_stride()),
+                }
+                .unwrap_or(0.0);
+
+                return scrollable::scroll_to(
+                    self.list_scroll_id.clone(),
+                    AbsoluteOffset {
+                        x: Some(0.0),
+                        y: Some(scroll_offset),
+                    },
+                );
             }
 
             // Add selected paths from the Open dialog
@@ -1125,8 +1547,12 @@ impl cosmic::Application for AppModel {
             }
 
             Message::SetVolume(volume) => {
+                let volume = volume.clamp(0, 100);
                 state_set!(volume, volume);
-                self.playback_service.set_volume(volume as f64 / 100.0);
+                self.playback_service
+                    .set_volume(Self::normalized_volume(volume));
+                let muted = false;
+                state_set!(muted, muted);
             }
 
             Message::SliderSeek(time) => {
@@ -1134,7 +1560,14 @@ impl cosmic::Application for AppModel {
                 self.playback_service.set_progress(time);
             }
 
+            Message::Surface(action) => {
+                return cosmic::task::message(cosmic::Action::Cosmic(
+                    cosmic::app::Action::Surface(action),
+                ));
+            }
+
             Message::Tick => {
+                self.poll_mpris_connection_ready();
                 self.playback_service.validate_session();
 
                 // Process playback events
@@ -1144,6 +1577,11 @@ impl cosmic::Application for AppModel {
                         PlaybackEvent::TrackEnded => {
                             self.playback_service
                                 .next(self.state.repeat_mode.clone(), self.state.repeat);
+                        }
+                        PlaybackEvent::GaplessTrackAdvanced => {
+                            // Session index updates inside playback_service.tick()
+                            // Just update MPRIS
+                            self.update_mpris();
                         }
                         PlaybackEvent::Error(err) => {
                             eprintln!("Playback error: {}", err);
@@ -1159,7 +1597,7 @@ impl cosmic::Application for AppModel {
                 // Handle MPRIS commands
                 let commands = self.playback_service.process_mpris_commands();
                 for cmd in commands {
-                    println!("mpris message: {:?}", cmd);
+                    //println!("mpris message: {:?}", cmd);
                     match cmd {
                         MprisCommand::Play => {
                             self.start_session_maybe();
@@ -1189,9 +1627,12 @@ impl cosmic::Application for AppModel {
                             self.playback_service.seek(pos_us as f32 / 1_000_000.0);
                         }
                         MprisCommand::SetVolume(vol) => {
-                            let volume = (vol * 100.0).clamp(0.0, 100.0) as i32;
+                            let output_volume = vol.clamp(0.0, 1.0);
+                            let volume = (output_volume * 100.0).clamp(0.0, 100.0) as i32;
                             state_set!(volume, volume);
-                            self.playback_service.set_volume(vol);
+                            self.playback_service.set_volume(output_volume);
+                            let muted = false;
+                            state_set!(muted, muted);
                         }
                         MprisCommand::SetLoopStatus(status) => match status.as_str() {
                             "None" => {
@@ -1210,11 +1651,31 @@ impl cosmic::Application for AppModel {
                         MprisCommand::SetShuffle(shuffle) => {
                             state_set!(shuffle, shuffle);
                             // update session shuffle as in ToggleShuffle handler
+                            self.sync_shuffle_state_to_session(shuffle);
                         }
                     }
+
+                    self.playback_service
+                        .set_repeat_state(self.state.repeat_mode.clone(), self.state.repeat);
                 }
 
                 self.update_mpris();
+            }
+
+            Message::TitleSort(title_sort) => {
+                config_set!(title_sort, title_sort);
+                self.config.title_sort = title_sort;
+                self.sort_all_playlists();
+            }
+
+            Message::ToggleSortCaseSensitive(sort_case_sensitive) => {
+                if self.config.sort_case_sensitive == sort_case_sensitive {
+                    return Task::none();
+                }
+
+                config_set!(sort_case_sensitive, sort_case_sensitive);
+                self.config.sort_case_sensitive = sort_case_sensitive;
+                self.sort_all_playlists();
             }
 
             Message::ToggleContextPage(context_page) => {
@@ -1227,42 +1688,91 @@ impl cosmic::Application for AppModel {
                     self.core.window.show_context = true;
                 }
 
-                // Restore scroll position from view model
-                if let Some(view_model) = self.calculate_list_view() {
-                    return scrollable::scroll_to::<Action<Message>>(
-                        self.list_scroll_id.clone(),
-                        AbsoluteOffset {
-                            x: 0.0,
-                            y: view_model.scroll_offset,
-                        },
-                    );
+                let scroll_offset = match self.config.view_mode {
+                    ViewMode::List => self
+                        .calculate_list_view()
+                        .map(|view_model| view_model.scroll_offset),
+                    ViewMode::Grid => Some(self.grid_start as f32 * self.grid_row_stride()),
                 }
+                .unwrap_or(0.0);
 
-                return Task::none();
+                return scrollable::scroll_to::<Action<Message>>(
+                    self.list_scroll_id.clone(),
+                    AbsoluteOffset {
+                        x: Some(0.0),
+                        y: Some(scroll_offset),
+                    },
+                );
             }
 
             Message::ToggleListTextWrap(list_text_wrap) => {
                 config_set!(list_text_wrap, list_text_wrap);
             }
 
+            Message::ToggleListAlbumColumn(list_show_album_column) => {
+                config_set!(list_show_album_column, list_show_album_column);
+            }
+
+            Message::ToggleListArtistColumn(list_show_artist_column) => {
+                config_set!(list_show_artist_column, list_show_artist_column);
+            }
+
+            Message::ToggleListAlbumArtistColumn(list_show_album_artist_column) => {
+                config_set!(list_show_album_artist_column, list_show_album_artist_column);
+            }
+
             Message::ToggleListRowAlignTop(list_row_align_top) => {
                 config_set!(list_row_align_top, list_row_align_top);
             }
 
+            Message::ToggleListTrackNumberColumn(list_show_track_number_column) => {
+                config_set!(list_show_track_number_column, list_show_track_number_column);
+            }
+
+            Message::ToggleListTrackTotalColumn(list_show_track_total_column) => {
+                config_set!(list_show_track_total_column, list_show_track_total_column);
+            }
+
+            Message::ToggleListDiscNumberColumn(list_show_disc_number_column) => {
+                config_set!(list_show_disc_number_column, list_show_disc_number_column);
+            }
+
+            Message::ToggleListDiscTotalColumn(list_show_disc_total_column) => {
+                config_set!(list_show_disc_total_column, list_show_disc_total_column);
+            }
+
+            Message::ToggleListGenreColumn(list_show_genre_column) => {
+                config_set!(list_show_genre_column, list_show_genre_column);
+            }
+
+            Message::ToggleListFilePathColumn(list_show_file_path_column) => {
+                config_set!(list_show_file_path_column, list_show_file_path_column);
+            }
+
+            Message::ToggleListDurationColumn(list_show_duration_column) => {
+                config_set!(list_show_duration_column, list_show_duration_column);
+            }
+
+            Message::ToggleListTitleColumn(list_show_title_column) => {
+                config_set!(list_show_title_column, list_show_title_column);
+            }
+
             Message::ToggleMute => {
                 let muted = !self.state.muted;
-                if muted {
-                    self.playback_service.set_volume(0.0);
+                self.playback_service.set_volume(if muted {
+                    0.0
                 } else {
-                    self.playback_service
-                        .set_volume(self.state.volume as f64 / 100.0);
-                }
+                    Self::normalized_volume(self.state.volume)
+                });
                 state_set!(muted, muted);
             }
 
             Message::ToggleRepeat => {
                 let repeat = !self.state.repeat;
                 state_set!(repeat, repeat);
+                // Update playback service state (for gapless playback)
+                self.playback_service
+                    .set_repeat_state(self.state.repeat_mode.clone(), self.state.repeat);
             }
 
             Message::ToggleRepeatMode => {
@@ -1273,6 +1783,8 @@ impl cosmic::Application for AppModel {
                 };
 
                 state_set!(repeat_mode, repeat_mode);
+                self.playback_service
+                    .set_repeat_state(self.state.repeat_mode.clone(), self.state.repeat);
             }
 
             Message::ToggleShuffle => {
@@ -1280,13 +1792,8 @@ impl cosmic::Application for AppModel {
                 state_set!(shuffle, shuffle);
 
                 // Update current session with new shuffle setting
-                if let Some(session) = self.playback_service.session() {
-                    let playlist_id = session.playlist_id;
-                    if let Ok(playlist) = self.playlist_service.get(playlist_id) {
-                        self.playback_service
-                            .update_session_shuffle(playlist, shuffle);
-                    }
-                }
+                self.sync_shuffle_state_to_session(shuffle);
+                self.update_mpris();
             }
 
             Message::UpdateConfig(config) => {
@@ -1310,6 +1817,8 @@ impl cosmic::Application for AppModel {
                 }
 
                 DialogPage::DeleteSelectedFromPlaylist => {}
+
+                DialogPage::ConfirmPlaylistDuplicate { .. } => {}
             },
 
             Message::UpdateLibrary => {
@@ -1335,6 +1844,24 @@ impl cosmic::Application for AppModel {
                     .map(|progress| cosmic::Action::App(Message::LibraryProgress(progress)));
             }
 
+            Message::VolumeDown => {
+                let volume = (self.state.volume as f32 - 10.0).clamp(0.0, 100.0) as i32;
+                state_set!(volume, volume);
+                self.playback_service
+                    .set_volume(Self::normalized_volume(volume));
+                let muted = false;
+                state_set!(muted, muted);
+            }
+
+            Message::VolumeUp => {
+                let volume = (self.state.volume as f32 + 10.0).clamp(0.0, 100.0) as i32;
+                state_set!(volume, volume);
+                self.playback_service
+                    .set_volume(Self::normalized_volume(volume));
+                let muted = false;
+                state_set!(muted, muted);
+            }
+
             Message::WindowResized(size) => {
                 let window_width = size.width;
                 let window_height = size.height;
@@ -1342,25 +1869,73 @@ impl cosmic::Application for AppModel {
                 state_set!(window_height, window_height);
             }
 
-            Message::ZoomIn => {
-                self.size_multiplier = clamp(
-                    self.size_multiplier + ZOOM_STEP,
-                    MIN_SIZE_MULTIPLIER,
-                    MAX_SIZE_MULTIPLIER,
-                );
-                state_set!(size_multiplier, self.size_multiplier);
-            }
+            Message::ZoomIn => match self.config.view_mode {
+                ViewMode::List => {
+                    self.list_size_multiplier = clamp(
+                        self.list_size_multiplier + ZOOM_STEP,
+                        LIST_MIN_SIZE_MULTIPLIER,
+                        LIST_MAX_SIZE_MULTIPLIER,
+                    );
+                    state_set!(list_size_multiplier, Some(self.list_size_multiplier));
+                }
+                ViewMode::Grid => {
+                    self.grid_size_multiplier = clamp(
+                        self.grid_size_multiplier + ZOOM_STEP,
+                        GRID_MIN_SIZE_MULTIPLIER,
+                        GRID_MAX_SIZE_MULTIPLIER,
+                    );
+                    state_set!(grid_size_multiplier, Some(self.grid_size_multiplier));
+                }
+            },
 
-            Message::ZoomOut => {
-                self.size_multiplier = clamp(
-                    self.size_multiplier - ZOOM_STEP,
-                    MIN_SIZE_MULTIPLIER,
-                    MAX_SIZE_MULTIPLIER,
-                );
-                state_set!(size_multiplier, self.size_multiplier);
-            }
+            Message::ZoomOut => match self.config.view_mode {
+                ViewMode::List => {
+                    self.list_size_multiplier = clamp(
+                        self.list_size_multiplier - ZOOM_STEP,
+                        LIST_MIN_SIZE_MULTIPLIER,
+                        LIST_MAX_SIZE_MULTIPLIER,
+                    );
+                    state_set!(list_size_multiplier, Some(self.list_size_multiplier));
+                }
+                ViewMode::Grid => {
+                    self.grid_size_multiplier = clamp(
+                        self.grid_size_multiplier - ZOOM_STEP,
+                        GRID_MIN_SIZE_MULTIPLIER,
+                        GRID_MAX_SIZE_MULTIPLIER,
+                    );
+                    state_set!(grid_size_multiplier, Some(self.grid_size_multiplier));
+                }
+            },
         }
         Task::none()
+    }
+
+    fn nav_bar(&self) -> Option<Element<'_, Action<Self::Message>>> {
+        if !self.core().nav_bar_active() {
+            return None;
+        }
+
+        let mut nav = widget::nav_bar_dnd::<Action<Message>, TrackDropData>(
+            &self.nav,
+            // on_activate: normal click behavior
+            nav_activate,
+            // on_dnd_enter
+            |_entity, _offered_mimes| Action::None,
+            // on_dnd_leave
+            |_entity| Action::None,
+            // on_dnd_drop
+            |entity, data, _action| Action::App(Message::NavDrop(entity, data.unwrap())),
+            self.nav_dnd_id,
+        )
+        .into_container()
+        .width(Length::Shrink)
+        .height(Length::Fill);
+
+        if !self.core().is_condensed() {
+            nav = nav.max_width(280);
+        }
+
+        Some(nav.into())
     }
 
     /// Called when a nav item is selected.
@@ -1378,12 +1953,16 @@ impl cosmic::Application for AppModel {
                 // Reset state when switching playlists
                 self.list_last_selected_id = None;
                 self.list_start = 0; // Reset scroll position state
+                self.grid_start = 0;
 
                 return Task::batch([
                     self.update_title(),
                     scrollable::scroll_to(
                         self.list_scroll_id.clone(),
-                        AbsoluteOffset { x: 0.0, y: 0.0 },
+                        AbsoluteOffset {
+                            x: Some(0.0 as f32),
+                            y: Some(0.0 as f32),
+                        },
                     ),
                 ]);
             }
@@ -1399,6 +1978,66 @@ impl cosmic::Application for AppModel {
 }
 
 impl AppModel {
+    /// Initializes the MPRIS connection and registers the MediaPlayer2 interfaces.
+    async fn init_mpris_connection(
+        mpris_tx: tokio::sync::mpsc::UnboundedSender<MprisCommand>,
+        mpris_state: Arc<Mutex<MprisState>>,
+    ) -> Result<zbus::Connection, String> {
+        let connection = zbus::Connection::session()
+            .await
+            .map_err(|err| format!("failed to connect to the session bus: {err}"))?;
+
+        connection
+            .object_server()
+            .at("/org/mpris/MediaPlayer2", MediaPlayer2)
+            .await
+            .map_err(|err| format!("failed to register MediaPlayer2 interface: {err}"))?;
+
+        connection
+            .object_server()
+            .at(
+                "/org/mpris/MediaPlayer2",
+                MediaPlayer2Player {
+                    tx: mpris_tx,
+                    state: mpris_state,
+                },
+            )
+            .await
+            .map_err(|err| format!("failed to register MediaPlayer2Player interface: {err}"))?;
+
+        connection
+            .request_name("org.mpris.MediaPlayer2.ethereal-waves")
+            .await
+            .map_err(|err| format!("failed to acquire the MPRIS bus name: {err}"))?;
+
+        Ok(connection)
+    }
+
+    /// Polls for the MPRIS connection to be ready and updates the model accordingly.
+    fn poll_mpris_connection_ready(&mut self) {
+        let recv_result = match self.mpris_connection_rx.as_ref() {
+            Some(receiver) => receiver.try_recv(),
+            None => return,
+        };
+
+        match recv_result {
+            Ok(Ok(connection)) => {
+                self.mpris_connection = Some(connection);
+                self.mpris_connection_rx = None;
+                self.update_mpris();
+            }
+            Ok(Err(err)) => {
+                log::warn!("MPRIS disabled: {}", err);
+                self.mpris_connection_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                log::warn!("MPRIS initialization task ended before reporting a connection");
+                self.mpris_connection_rx = None;
+            }
+        }
+    }
+
     /// Updates the header and window titles.
     pub fn update_title(&mut self) -> Task<cosmic::Action<Message>> {
         let mut window_title = fl!("app-title");
@@ -1417,6 +2056,178 @@ impl AppModel {
         }
     }
 
+    /// Get display name for track in duplicate dialog
+    fn duplicate_track_display_name(track: &Track) -> String {
+        track
+            .metadata
+            .title
+            .clone()
+            .filter(|title| !title.trim().is_empty())
+            .or_else(|| {
+                track
+                    .path
+                    .file_name()
+                    .and_then(|file_name| file_name.to_str())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| track.path.display().to_string())
+    }
+
+    fn playlist_name_is_valid(name: &str) -> bool {
+        !name.trim().is_empty()
+    }
+
+    fn dialog_primary_message(dialog_page: &DialogPage) -> Option<Message> {
+        match dialog_page {
+            DialogPage::NewPlaylist(name) if Self::playlist_name_is_valid(name) => {
+                Some(Message::DialogComplete)
+            }
+            DialogPage::RenamePlaylist { name, .. } if Self::playlist_name_is_valid(name) => {
+                Some(Message::DialogComplete)
+            }
+            DialogPage::DeletePlaylist(_) | DialogPage::DeleteSelectedFromPlaylist => {
+                Some(Message::DialogComplete)
+            }
+            DialogPage::ConfirmPlaylistDuplicate { .. } => Some(
+                Message::PlaylistDuplicateDialogAction(PlaylistDuplicateDialogAction::Add),
+            ),
+            _ => None,
+        }
+    }
+
+    fn update_or_close_playlist_duplicate_dialog(
+        &mut self,
+        destination_id: PlaylistId,
+        tracks: VecDeque<Track>,
+    ) {
+        if tracks.is_empty() {
+            let _ = self.dialog_pages.pop_front();
+        } else {
+            self.dialog_pages
+                .update_front(DialogPage::ConfirmPlaylistDuplicate {
+                    destination_id,
+                    tracks,
+                });
+        }
+    }
+
+    fn handle_playlist_duplicate_dialog_action(&mut self, action: PlaylistDuplicateDialogAction) {
+        let Some(DialogPage::ConfirmPlaylistDuplicate {
+            destination_id,
+            mut tracks,
+        }) = self.dialog_pages.front().cloned()
+        else {
+            return;
+        };
+
+        match action {
+            PlaylistDuplicateDialogAction::Add => {
+                if let Some(track) = tracks.pop_front() {
+                    if let Err(err) = self
+                        .playlist_service
+                        .add_tracks(destination_id, vec![track])
+                    {
+                        eprintln!("Error adding duplicate track: {}", err);
+                    }
+                }
+
+                self.update_or_close_playlist_duplicate_dialog(destination_id, tracks);
+            }
+
+            PlaylistDuplicateDialogAction::YesToAll => {
+                let remaining_tracks: Vec<_> = tracks.drain(..).collect();
+
+                if !remaining_tracks.is_empty() {
+                    if let Err(err) = self
+                        .playlist_service
+                        .add_tracks(destination_id, remaining_tracks)
+                    {
+                        eprintln!("Error adding duplicate tracks: {}", err);
+                    }
+                }
+
+                self.update_or_close_playlist_duplicate_dialog(destination_id, tracks);
+            }
+
+            PlaylistDuplicateDialogAction::NoToAll => {
+                tracks.clear();
+                self.update_or_close_playlist_duplicate_dialog(destination_id, tracks);
+            }
+
+            PlaylistDuplicateDialogAction::Skip => {
+                // Skip just the current duplicate and continue prompting
+                let _ = tracks.pop_front();
+                self.update_or_close_playlist_duplicate_dialog(destination_id, tracks);
+            }
+        }
+    }
+
+    fn add_tracks_to_playlist_with_duplicate_policy(
+        &mut self,
+        destination_id: PlaylistId,
+        tracks: Vec<Track>,
+    ) {
+        if tracks.is_empty() {
+            return;
+        }
+
+        match self.config.playlist_duplicate_policy {
+            PlaylistDuplicatePolicy::Allow => {
+                if let Err(err) = self.playlist_service.add_tracks(destination_id, tracks) {
+                    eprintln!("Error adding tracks: {}", err);
+                }
+            }
+
+            PlaylistDuplicatePolicy::Disallow => {
+                match self
+                    .playlist_service
+                    .split_tracks_by_duplicate(destination_id, tracks)
+                {
+                    Ok((tracks_to_add, _duplicates)) => {
+                        if !tracks_to_add.is_empty() {
+                            if let Err(err) = self
+                                .playlist_service
+                                .add_tracks(destination_id, tracks_to_add)
+                            {
+                                eprintln!("Error adding tracks: {}", err);
+                            }
+                        }
+                    }
+                    Err(err) => eprintln!("Error checking playlist duplicates: {}", err),
+                }
+            }
+
+            PlaylistDuplicatePolicy::Ask => {
+                match self
+                    .playlist_service
+                    .split_tracks_by_duplicate(destination_id, tracks)
+                {
+                    Ok((tracks_to_add, duplicates)) => {
+                        if !tracks_to_add.is_empty() {
+                            if let Err(err) = self
+                                .playlist_service
+                                .add_tracks(destination_id, tracks_to_add)
+                            {
+                                eprintln!("Error adding tracks: {}", err);
+                            }
+                        }
+
+                        if !duplicates.is_empty() {
+                            self.dialog_pages
+                                .push_back(DialogPage::ConfirmPlaylistDuplicate {
+                                    destination_id,
+                                    tracks: VecDeque::from(duplicates),
+                                });
+                        }
+                    }
+                    Err(err) => eprintln!("Error checking playlist duplicates: {}", err),
+                }
+            }
+        }
+
+        self.invalidate_all_caches();
+    }
+
     /// Settings page content
     fn settings(&self) -> Element<'_, Message> {
         let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
@@ -1425,7 +2236,15 @@ impl AppModel {
             AppTheme::Light => 2,
             AppTheme::System => 0,
         };
-
+        let playlist_duplicate_policy_selected = match self.config.playlist_duplicate_policy {
+            PlaylistDuplicatePolicy::Allow => 0,
+            PlaylistDuplicatePolicy::Disallow => 1,
+            PlaylistDuplicatePolicy::Ask => 2,
+        };
+        let title_sort_selected = match self.config.title_sort {
+            TitleSortMode::Alphabetical => 0,
+            TitleSortMode::TrackNumber => 1,
+        };
         let mut library_column = widget::column();
 
         library_column = library_column.push(
@@ -1473,6 +2292,56 @@ impl AppModel {
             }
         }
 
+        let ordered_columns = self.config.normalized_list_column_order();
+        let sorting_section = settings::section()
+            .title("Sorting")
+            .add({
+                settings::item::builder(fl!("title-sort")).control(widget::dropdown(
+                    &self.title_sort_labels,
+                    Some(title_sort_selected),
+                    move |index| {
+                        Message::TitleSort(match index {
+                            1 => TitleSortMode::TrackNumber,
+                            _ => TitleSortMode::Alphabetical,
+                        })
+                    },
+                ))
+            })
+            .add({
+                settings::item::builder("Case-sensitive sort").control(
+                    toggler(self.config.sort_case_sensitive)
+                        .on_toggle(Message::ToggleSortCaseSensitive),
+                )
+            });
+
+        let mut list_view_section = settings::section()
+            .title(fl!("list-view"))
+            .add({
+                settings::item::builder(fl!("wrap-text")).control(
+                    toggler(self.config.list_text_wrap).on_toggle(Message::ToggleListTextWrap),
+                )
+            })
+            .add({
+                settings::item::builder(fl!("align-rows-top")).control(
+                    toggler(self.config.list_row_align_top)
+                        .on_toggle(Message::ToggleListRowAlignTop),
+                )
+            });
+
+        for (index, column) in ordered_columns.iter().copied().enumerate() {
+            list_view_section = list_view_section.add({
+                settings::item::builder(list_column_label(column)).control(
+                    list_column_settings_control(
+                        &self.config,
+                        column,
+                        index > 0,
+                        index + 1 < ordered_columns.len(),
+                        space_xxs,
+                    ),
+                )
+            });
+        }
+
         settings::view_column(vec![
             settings::section()
                 .title(fl!("appearance"))
@@ -1490,20 +2359,24 @@ impl AppModel {
                     ))
                 })
                 .into(),
+            sorting_section.into(),
             settings::section()
-                .title(fl!("list-view"))
+                .title(fl!("playlist"))
                 .add({
-                    settings::item::builder(fl!("wrap-text")).control(
-                        toggler(self.config.list_text_wrap).on_toggle(Message::ToggleListTextWrap),
-                    )
-                })
-                .add({
-                    settings::item::builder(fl!("align-rows-top")).control(
-                        toggler(self.config.list_row_align_top)
-                            .on_toggle(Message::ToggleListRowAlignTop),
-                    )
+                    settings::item::builder(fl!("playlist-duplicates")).control(widget::dropdown(
+                        &self.playlist_duplicate_policy_lables,
+                        Some(playlist_duplicate_policy_selected),
+                        move |index| {
+                            Message::PlaylistDuplicatePolicy(match index {
+                                1 => PlaylistDuplicatePolicy::Disallow,
+                                2 => PlaylistDuplicatePolicy::Ask,
+                                _ => PlaylistDuplicatePolicy::Allow,
+                            })
+                        },
+                    ))
                 })
                 .into(),
+            list_view_section.into(),
             settings::section()
                 .title(fl!("library"))
                 .add(library_column)
@@ -1528,9 +2401,7 @@ impl AppModel {
 
         for (i, t) in tracks.iter().enumerate().take(take) {
             let duration = t.metadata.duration.clone().unwrap_or(0.0);
-            let minutes = (duration / 60.0) as u32;
-            let seconds = f32::trunc(duration) as u32 - (minutes * 60);
-            let display_duration = format!("{}:{:02}", minutes, seconds);
+            let display_duration = format_duration(duration);
 
             let container = widget::container(
                 widget::column()
@@ -1556,35 +2427,19 @@ impl AppModel {
                     ))
                     .push(track_info_row(
                         fl!("album-disc-number"),
-                        t.metadata
-                            .album_disc_number
-                            .clone()
-                            .unwrap_or_default()
-                            .to_string(),
+                        optional_display(t.metadata.album_disc_number),
                     ))
                     .push(track_info_row(
                         fl!("album-disc-count"),
-                        t.metadata
-                            .album_disc_count
-                            .clone()
-                            .unwrap_or_default()
-                            .to_string(),
+                        optional_display(t.metadata.album_disc_count),
                     ))
                     .push(track_info_row(
                         fl!("track-number"),
-                        t.metadata
-                            .track_number
-                            .clone()
-                            .unwrap_or_default()
-                            .to_string(),
+                        optional_display(t.metadata.track_number),
                     ))
                     .push(track_info_row(
                         fl!("track-count"),
-                        t.metadata
-                            .track_count
-                            .clone()
-                            .unwrap_or_default()
-                            .to_string(),
+                        optional_display(t.metadata.track_count),
                     ))
                     .push(track_info_row(fl!("duration"), display_duration))
                     .push(
@@ -1647,9 +2502,13 @@ impl AppModel {
                 playlist.sort(
                     self.state.sort_by.clone(),
                     self.state.sort_direction.clone(),
+                    self.config.title_sort,
+                    self.config.sort_case_sensitive,
                 );
             }
         }
+
+        self.invalidate_all_caches();
 
         // Decide nav order
         let items: Vec<NavPlaylistItem> = if !self.state.playlist_nav_order.is_empty() {
@@ -1715,7 +2574,10 @@ impl AppModel {
         let Some(conn) = &self.mpris_connection else {
             return;
         };
-        let mut state = self.mpris_state.lock().unwrap();
+        let Ok(mut state) = self.mpris_state.lock() else {
+            log::warn!("failed to lock MPRIS state for update");
+            return;
+        };
 
         state.playback_status = self.playback_service.status();
         state.shuffle = self.state.shuffle;
@@ -1724,7 +2586,7 @@ impl AppModel {
             (true, RepeatMode::One) => "Track".to_string(),
             (true, RepeatMode::All) => "Playlist".to_string(),
         };
-        state.volume = self.state.volume as f64 / 100.0;
+        state.volume = self.effective_output_volume();
         state.position = (self.playback_service.progress() * 1_000_000.0) as i64;
 
         // Build metadata
@@ -1732,7 +2594,7 @@ impl AppModel {
         if let Some(now_playing) = self.playback_service.now_playing() {
             // Track ID
             let track_id = format!(
-                "/com/github/LotusPetal392/etherealwaves/track/{}",
+                "/com/galacticpirateradio/etherealwaves/track/{}",
                 now_playing
                     .id
                     .clone()
@@ -1780,22 +2642,15 @@ impl AppModel {
             }
 
             // Album art URL
-            if let Some(id) = &now_playing.id {
-                // Try to find artwork file using the track ID
-                let artwork_filename = format!("{}.jpg", id);
-                let base_dirs = xdg::BaseDirectories::with_prefix("ethereal-waves");
-
-                if let Some(artwork_path) =
-                    base_dirs.find_cache_file(format!("artwork/{}", artwork_filename))
+            if let Some(artwork_filename) = &now_playing.artwork_filename {
+                if let Some(artwork_path) = self
+                    .app_xdg_dirs
+                    .find_cache_file(format!("{}/{}", ARTWORK_DIR, artwork_filename))
                 {
-                    if artwork_path.exists() {
+                    if let Ok(art_url) = url::Url::from_file_path(&artwork_path) {
                         meta.insert(
                             "mpris:artUrl".to_string(),
-                            zbus::zvariant::Value::new(format!(
-                                "file://{}",
-                                artwork_path.to_string_lossy()
-                            ))
-                            .into(),
+                            zbus::zvariant::Value::new(art_url.to_string()).into(),
                         );
                     }
                 }
@@ -1816,7 +2671,7 @@ impl AppModel {
                 .await
             {
                 // Get the signal context
-                let signal_ctx = iface_ref.signal_context();
+                let signal_ctx = iface_ref.signal_emitter();
 
                 // Emit property changed signals using the interface reference
                 // Note: These methods are generated by the #[zbus(property)] macro
@@ -1854,6 +2709,7 @@ impl AppModel {
 
                     self.playback_service
                         .start_session(playlist, start_index, self.state.shuffle);
+                    self.sync_playback_output_from_state();
                 }
             }
         }
@@ -1967,54 +2823,30 @@ impl AppModel {
 
     pub fn calculate_list_view(&self) -> Option<ListViewModel> {
         let active_playlist = self.playlist_service.get(self.view_playlist?).ok()?;
+        let tracks = active_playlist.tracks();
+        let normalized_search = self.search_term.as_ref().map(|term| term.to_lowercase());
+        let (filtered_track_indices, selected_track_ids, max_track_number_chars) =
+            self.cached_view_base(active_playlist.id(), tracks, normalized_search.as_deref());
 
-        let search = self.search_term.as_deref().unwrap_or("").to_lowercase();
+        let filtered_track_count = filtered_track_indices.len();
+        let max_start = Self::max_list_start(filtered_track_count, self.list_visible_row_count);
+        let list_start = self.list_start.min(max_start);
 
-        let visible_tracks: Vec<(usize, Track)> = if self.search_term.is_some() {
-            active_playlist
-                .tracks()
-                .iter()
-                .cloned()
-                .enumerate()
-                .filter(|(_, t)| {
-                    [
-                        t.metadata.title.as_deref(),
-                        t.metadata.album.as_deref(),
-                        t.metadata.artist.as_deref(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .any(|v| v.to_lowercase().contains(&search))
-                })
-                .collect()
+        let row_height = self.list_size_multiplier * BASE_ROW_HEIGHT;
+        let row_stride =
+            calculate_row_stride(self.list_size_multiplier, BASE_ROW_HEIGHT, DIVIDER_HEIGHT);
+
+        let list_end = (list_start + self.list_visible_row_count + 1).min(filtered_track_count);
+        let visible_track_indices = if list_start < list_end {
+            filtered_track_indices[list_start..list_end].to_vec()
         } else {
-            active_playlist
-                .tracks()
-                .iter()
-                .cloned()
-                .enumerate()
-                .collect()
+            Vec::new()
         };
 
-        let mut list_start = self.list_start;
-        let tracks_len = visible_tracks.len();
-
-        let row_height = self.size_multiplier * BASE_ROW_HEIGHT;
-
-        let row_stride =
-            calculate_row_stride(self.size_multiplier, BASE_ROW_HEIGHT, DIVIDER_HEIGHT);
-
-        let list_end = (list_start + self.list_visible_row_count + 1).min(tracks_len);
-
-        if list_start >= list_end {
-            list_start = 0;
-        }
-
-        let take = list_end.saturating_sub(list_start);
-        let chars = tracks_len.to_string().len() as f32;
+        let chars = filtered_track_count.to_string().len() as f32;
         let number_column_width = chars * 11.0;
         let icon_column_width = 24.0;
-        let viewport_height = tracks_len as f32 * row_stride;
+        let viewport_height = filtered_track_count as f32 * row_stride;
 
         let is_playing_playlist = self
             .playback_service
@@ -2022,7 +2854,6 @@ impl AppModel {
             .map(|session| session.playlist_id == active_playlist.id())
             .unwrap_or(false);
 
-        // Determine UI settings from config
         let wrapping = if self.config.list_text_wrap {
             Wrapping::Word
         } else {
@@ -2043,36 +2874,116 @@ impl AppModel {
         let scroll_offset = list_start as f32 * row_stride;
 
         Some(ListViewModel {
-            visible_tracks,
+            visible_track_indices,
+            selected_track_ids,
+            max_track_number_chars,
             list_start,
-            list_end,
-            take,
             number_column_width,
             icon_column_width,
             row_stride,
             viewport_height,
             is_playing_playlist,
             row_height,
-            scroll_offset: scroll_offset,
+            scroll_offset,
             wrapping,
             row_align,
             sort_direction_icon,
         })
     }
 
-    pub fn is_track_playing(&self, track: &Track, view_model: &ListViewModel) -> bool {
-        view_model.is_playing_playlist
+    pub fn calculate_grid_view(&self, size: Size) -> Option<GridViewModel> {
+        let active_playlist = self.playlist_service.get(self.view_playlist?).ok()?;
+        let tracks = active_playlist.tracks();
+        let normalized_search = self.search_term.as_ref().map(|term| term.to_lowercase());
+        let (filtered_track_indices, selected_track_ids, _) =
+            self.cached_view_base(active_playlist.id(), tracks, normalized_search.as_deref());
+        let grid_card_bases = self.cached_grid_card_bases(
+            active_playlist.id(),
+            tracks,
+            Arc::clone(&filtered_track_indices),
+            normalized_search.as_deref(),
+            self.config.grid_group_by,
+        );
+
+        let layout = self.grid_layout_metrics(size.width);
+        let total_card_count = grid_card_bases.len();
+        let total_rows = Self::grid_total_rows(total_card_count, layout.column_count);
+        let visible_row_count =
+            Self::grid_visible_row_count_for_stride(size.height, layout.row_stride);
+        let max_start = total_rows.saturating_sub(visible_row_count.max(1));
+        let grid_start = self.grid_start.min(max_start);
+
+        let start_item = grid_start.saturating_mul(layout.column_count);
+        let end_item = (grid_start + visible_row_count + 1)
+            .saturating_mul(layout.column_count)
+            .min(total_card_count);
+
+        let is_playing_playlist = self
+            .playback_service
+            .session()
+            .map(|session| session.playlist_id == active_playlist.id())
+            .unwrap_or(false);
+
+        let visible_cards = if start_item < end_item {
+            grid_card_bases[start_item..end_item]
+                .iter()
+                .map(|card| GridCardModel {
+                    title: card.title.clone(),
+                    subtitle: card.subtitle.clone(),
+                    info_text: card.info_text.clone(),
+                    duration_text: card.duration_text.clone(),
+                    artwork_filename: card.artwork_filename.clone(),
+                    playlist_indices: Arc::clone(&card.playlist_indices),
+                    track_ids: Arc::clone(&card.track_ids),
+                    selected: card.playlist_indices.iter().all(|&index| {
+                        tracks
+                            .get(index)
+                            .map(|track| track.selected)
+                            .unwrap_or(false)
+                    }),
+                    is_playing: card.playlist_indices.iter().any(|&index| {
+                        tracks
+                            .get(index)
+                            .map(|track| self.is_track_playing(track, is_playing_playlist))
+                            .unwrap_or(false)
+                    }),
+                    has_available_track: card.has_available_track,
+                    has_missing_tracks: card.has_missing_tracks,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let top_spacer_height = grid_start as f32 * layout.row_stride;
+        let visible_rows = Self::grid_total_rows(visible_cards.len(), layout.column_count);
+        let rendered_height = visible_rows as f32 * layout.row_stride;
+        let total_height = total_rows as f32 * layout.row_stride;
+        let bottom_spacer_height = (total_height - top_spacer_height - rendered_height).max(0.0);
+
+        Some(GridViewModel {
+            visible_cards,
+            selected_track_ids,
+            column_count: layout.column_count,
+            card_width: layout.card_width,
+            card_height: layout.card_height,
+            artwork_size: layout.artwork_size,
+            card_padding: layout.card_padding,
+            item_spacing: layout.item_spacing,
+            view_padding: layout.view_padding,
+            top_spacer_height,
+            bottom_spacer_height,
+        })
+    }
+
+    pub fn is_track_playing(&self, track: &Track, is_playing_playlist: bool) -> bool {
+        is_playing_playlist
             && self
                 .playback_service
                 .session()
                 .and_then(|session| {
-                    session.order.get(session.index).and_then(|playing_track| {
-                        let playing_id = playing_track.metadata.id.clone()?;
-                        let current_id = track.metadata.id.clone()?;
-                        Some(
-                            playing_id == current_id
-                                && playing_track.date_added == track.date_added,
-                        )
+                    session.order.get(session.index).map(|playing_track| {
+                        playing_track.entry_id == track.entry_id && playing_track.path == track.path
                     })
                 })
                 .unwrap_or(false)
@@ -2127,6 +3038,27 @@ impl AppModel {
         }
     }
 
+    fn sort_all_playlists(&mut self) {
+        let playlist_ids: Vec<u32> = self.playlist_service.all().iter().map(|p| p.id()).collect();
+        let sort_by = self.state.sort_by.clone();
+        let sort_direction = self.state.sort_direction.clone();
+        let title_sort = self.config.title_sort;
+        let sort_case_sensitive = self.config.sort_case_sensitive;
+
+        for id in playlist_ids {
+            if let Ok(playlist) = self.playlist_service.get_mut(id) {
+                playlist.sort(
+                    sort_by.clone(),
+                    sort_direction.clone(),
+                    title_sort,
+                    sort_case_sensitive,
+                );
+            }
+        }
+
+        self.invalidate_all_caches();
+    }
+
     fn update_library_playlist(&mut self) {
         if let Ok(lib_playlist) = self.playlist_service.get_library_mut() {
             lib_playlist.clear();
@@ -2139,20 +3071,51 @@ impl AppModel {
             lib_playlist.sort(
                 self.state.sort_by.clone(),
                 self.state.sort_direction.clone(),
+                self.config.title_sort,
+                self.config.sort_case_sensitive,
             );
 
             let library = lib_playlist.clone();
             self.playback_service.update_session_for_library(&library);
         }
+
+        self.invalidate_all_caches();
     }
 
-    fn handle_key_pressed(&mut self, modifiers: Modifiers, key: Key) -> Task<Action<Message>> {
-        // Check key bindings first
-        for (key_bind, action) in self.key_binds.iter() {
-            if key_bind.matches(modifiers, &key) {
-                // Don't call self.update() - return a task that processes the message
-                let message = action.message();
-                return Task::done(cosmic::Action::App(message));
+    fn artwork_filenames_in_use(&self) -> HashSet<String> {
+        let mut artwork_filenames = HashSet::new();
+
+        for metadata in self.library.media.values() {
+            if let Some(artwork_filename) = &metadata.artwork_filename {
+                artwork_filenames.insert(artwork_filename.clone());
+            }
+        }
+
+        for playlist in self.playlist_service.all() {
+            for track in playlist.tracks() {
+                if let Some(artwork_filename) = &track.metadata.artwork_filename {
+                    artwork_filenames.insert(artwork_filename.clone());
+                }
+            }
+        }
+
+        artwork_filenames
+    }
+
+    fn handle_key_pressed(
+        &mut self,
+        modifiers: Modifiers,
+        key: Key,
+        status: event::Status,
+    ) -> Task<Action<Message>> {
+        // Only run app-wide keybinds if no widget already consumed the key (it was ignored)
+        if status == event::Status::Ignored {
+            for (key_bind, action) in self.key_binds.iter() {
+                if key_bind.matches(modifiers, &key) {
+                    // Don't call self.update() - return a task that processes the message
+                    let message = action.message();
+                    return Task::done(cosmic::Action::App(message));
+                }
             }
         }
 
@@ -2163,61 +3126,572 @@ impl AppModel {
             self.shift_pressed += 1;
         }
 
-        if self.dialog_pages.front().is_some() {
+        if let Some(dialog_page) = self.dialog_pages.front() {
             if key == Key::Named(Named::Escape) {
                 return Task::done(cosmic::Action::App(Message::DialogCancel));
             }
 
-            match self.dialog_pages.front().unwrap() {
-                DialogPage::NewPlaylist(name) => {
-                    if key == Key::Named(Named::Enter) && name.len() > 0 {
-                        return Task::done(cosmic::Action::App(Message::DialogComplete));
-                    }
+            if key == Key::Named(Named::Enter) {
+                if let Some(message) = Self::dialog_primary_message(dialog_page) {
+                    return Task::done(cosmic::Action::App(message));
                 }
-                DialogPage::RenamePlaylist { id, name } => {
-                    let _ = id;
-                    if key == Key::Named(Named::Enter) && name.len() > 0 {
-                        return Task::done(cosmic::Action::App(Message::DialogComplete));
-                    }
-                }
-                DialogPage::DeletePlaylist(_) => {}
-                DialogPage::DeleteSelectedFromPlaylist => {}
             }
 
-            if key == Key::Named(Named::Enter) {
-                return Task::done(cosmic::Action::App(Message::DialogComplete));
-            }
+            return Task::none();
         }
 
-        if matches!(self.view_mode, ViewMode::List) {
-            if let Some(view_model) = self.calculate_list_view() {
-                let scroll_amount = self.list_visible_row_count as f32 * view_model.row_stride;
+        let scroll_amount = match self.config.view_mode {
+            ViewMode::List => self
+                .calculate_list_view()
+                .map(|view_model| self.list_visible_row_count as f32 * view_model.row_stride),
+            ViewMode::Grid => Some(
+                self.grid_visible_row_count(self.state.window_height) as f32
+                    * self.grid_row_stride(),
+            ),
+        };
 
-                match key {
-                    Key::Named(Named::PageUp) => {
-                        return scrollable::scroll_by::<Action<Message>>(
-                            self.list_scroll_id.clone(),
-                            scrollable::AbsoluteOffset {
-                                x: 0.0,
-                                y: -scroll_amount,
-                            },
-                        );
-                    }
-                    Key::Named(Named::PageDown) => {
-                        return scrollable::scroll_by::<Action<Message>>(
-                            self.list_scroll_id.clone(),
-                            scrollable::AbsoluteOffset {
-                                x: 0.0,
-                                y: scroll_amount,
-                            },
-                        );
-                    }
-                    _ => {}
+        if let Some(scroll_amount) = scroll_amount {
+            match key {
+                Key::Named(Named::PageUp) => {
+                    return scrollable::scroll_by::<Action<Message>>(
+                        self.list_scroll_id.clone(),
+                        scrollable::AbsoluteOffset {
+                            x: 0.0,
+                            y: -scroll_amount,
+                        },
+                    );
                 }
+                Key::Named(Named::PageDown) => {
+                    return scrollable::scroll_by::<Action<Message>>(
+                        self.list_scroll_id.clone(),
+                        scrollable::AbsoluteOffset {
+                            x: 0.0,
+                            y: scroll_amount,
+                        },
+                    );
+                }
+                _ => {}
             }
         }
 
         Task::none()
+    }
+
+    fn sync_shuffle_state_to_session(&mut self, shuffle: bool) {
+        if let Some(session) = self.playback_service.session() {
+            let playlist_id = session.playlist_id;
+            if let Ok(playlist) = self.playlist_service.get(playlist_id) {
+                self.playback_service
+                    .update_session_shuffle(playlist, shuffle);
+            }
+        }
+    }
+
+    fn normalized_volume(volume: i32) -> f64 {
+        (volume as f64 / 100.0).clamp(0.0, 1.0)
+    }
+
+    fn effective_output_volume(&self) -> f64 {
+        if self.state.muted {
+            0.0
+        } else {
+            Self::normalized_volume(self.state.volume)
+        }
+    }
+
+    fn sync_playback_output_from_state(&mut self) {
+        self.playback_service
+            .set_volume(self.effective_output_volume());
+        self.update_mpris();
+    }
+
+    fn track_matches_search(track: &Track, normalized_search: Option<&str>) -> bool {
+        let Some(search) = normalized_search else {
+            return true;
+        };
+
+        let path = track.path.to_string_lossy();
+        [
+            track.metadata.title.as_deref(),
+            track.metadata.album.as_deref(),
+            track.metadata.artist.as_deref(),
+            track.metadata.album_artist.as_deref(),
+            track.metadata.genre.as_deref(),
+            Some(path.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| value.to_lowercase().contains(search))
+    }
+
+    fn track_number_chars(track: &Track) -> usize {
+        track
+            .metadata
+            .track_number
+            .map(|track_number| track_number.to_string().len())
+            .unwrap_or(0)
+    }
+
+    fn visible_track_count(&self) -> usize {
+        let Some(playlist_id) = self.view_playlist else {
+            return 0;
+        };
+
+        let Ok(active_playlist) = self.playlist_service.get(playlist_id) else {
+            return 0;
+        };
+
+        let normalized_search = self.search_term.as_ref().map(|term| term.to_lowercase());
+        let (filtered_track_indices, _, _) = self.cached_view_base(
+            playlist_id,
+            active_playlist.tracks(),
+            normalized_search.as_deref(),
+        );
+
+        filtered_track_indices.len()
+    }
+
+    fn visible_grid_card_count(&self) -> usize {
+        let Some(playlist_id) = self.view_playlist else {
+            return 0;
+        };
+
+        let Ok(active_playlist) = self.playlist_service.get(playlist_id) else {
+            return 0;
+        };
+
+        let normalized_search = self.search_term.as_ref().map(|term| term.to_lowercase());
+        let (filtered_track_indices, _, _) = self.cached_view_base(
+            playlist_id,
+            active_playlist.tracks(),
+            normalized_search.as_deref(),
+        );
+        let grid_card_bases = self.cached_grid_card_bases(
+            playlist_id,
+            active_playlist.tracks(),
+            filtered_track_indices,
+            normalized_search.as_deref(),
+            self.config.grid_group_by,
+        );
+
+        grid_card_bases.len()
+    }
+
+    fn invalidate_view_cache(&self) {
+        self.view_cache.borrow_mut().take();
+    }
+
+    fn invalidate_grid_card_cache(&self) {
+        self.grid_card_cache.borrow_mut().take();
+    }
+
+    fn invalidate_all_caches(&self) {
+        self.invalidate_view_cache();
+        self.invalidate_grid_card_cache();
+    }
+
+    fn filtered_track_indices(tracks: &[Track], normalized_search: Option<&str>) -> Vec<usize> {
+        if normalized_search.is_none() {
+            return (0..tracks.len()).collect();
+        }
+
+        tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, track)| {
+                Self::track_matches_search(track, normalized_search).then_some(index)
+            })
+            .collect()
+    }
+
+    fn cached_view_base(
+        &self,
+        playlist_id: PlaylistId,
+        tracks: &[Track],
+        normalized_search: Option<&str>,
+    ) -> (Arc<Vec<usize>>, Arc<Vec<String>>, usize) {
+        let key = CachedViewBaseKey {
+            playlist_id,
+            normalized_search: normalized_search.map(str::to_owned),
+        };
+
+        {
+            let cache = self.view_cache.borrow();
+            if let Some(cache) = cache.as_ref() {
+                if cache.key == key {
+                    return (
+                        Arc::clone(&cache.filtered_track_indices),
+                        Arc::clone(&cache.selected_track_ids),
+                        cache.max_track_number_chars,
+                    );
+                }
+            }
+        }
+
+        let filtered_track_indices =
+            Arc::new(Self::filtered_track_indices(tracks, normalized_search));
+        let mut selected_track_ids = Vec::new();
+        let mut max_track_number_chars = 0usize;
+
+        for &index in filtered_track_indices.iter() {
+            if let Some(track) = tracks.get(index) {
+                max_track_number_chars =
+                    max_track_number_chars.max(Self::track_number_chars(track));
+
+                if track.selected {
+                    selected_track_ids.push(track.instance_id());
+                }
+            }
+        }
+
+        let selected_track_ids = Arc::new(selected_track_ids);
+
+        *self.view_cache.borrow_mut() = Some(CachedViewBase {
+            key,
+            filtered_track_indices: Arc::clone(&filtered_track_indices),
+            selected_track_ids: Arc::clone(&selected_track_ids),
+            max_track_number_chars,
+        });
+
+        (
+            filtered_track_indices,
+            selected_track_ids,
+            max_track_number_chars,
+        )
+    }
+
+    fn cached_grid_card_bases(
+        &self,
+        playlist_id: PlaylistId,
+        tracks: &[Track],
+        filtered_track_indices: Arc<Vec<usize>>,
+        normalized_search: Option<&str>,
+        group_by: GridGroupBy,
+    ) -> Arc<Vec<GridCardBase>> {
+        let key = CachedGridCardBaseKey {
+            playlist_id,
+            normalized_search: normalized_search.map(str::to_owned),
+            group_by,
+        };
+
+        {
+            let cache = self.grid_card_cache.borrow();
+            if let Some(cache) = cache.as_ref() {
+                if cache.key == key {
+                    return Arc::clone(&cache.cards);
+                }
+            }
+        }
+
+        let cards =
+            Arc::new(self.build_grid_card_bases(tracks, filtered_track_indices.as_ref(), group_by));
+
+        *self.grid_card_cache.borrow_mut() = Some(CachedGridCardBase {
+            key,
+            cards: Arc::clone(&cards),
+        });
+
+        cards
+    }
+
+    fn build_grid_card_bases(
+        &self,
+        tracks: &[Track],
+        filtered_track_indices: &[usize],
+        group_by: GridGroupBy,
+    ) -> Vec<GridCardBase> {
+        match group_by {
+            GridGroupBy::Track => filtered_track_indices
+                .iter()
+                .filter_map(|&playlist_index| {
+                    tracks
+                        .get(playlist_index)
+                        .map(|track| self.build_track_grid_card_base(track, playlist_index))
+                })
+                .collect(),
+            GridGroupBy::Album | GridGroupBy::Artist | GridGroupBy::AlbumArtist => {
+                self.build_grouped_grid_card_bases(tracks, filtered_track_indices, group_by)
+            }
+        }
+    }
+
+    fn build_track_grid_card_base(&self, track: &Track, playlist_index: usize) -> GridCardBase {
+        let is_in_library = self.library.media.contains_key(&track.path);
+
+        GridCardBase {
+            title: non_empty_text(track.metadata.title.as_deref())
+                .unwrap_or_else(|| path_display_name(&track.path)),
+            subtitle: Self::grid_track_subtitle(track, is_in_library),
+            info_text: String::new(),
+            duration_text: format_optional_duration(track.metadata.duration),
+            artwork_filename: track.metadata.artwork_filename.clone(),
+            playlist_indices: Arc::new(vec![playlist_index]),
+            track_ids: Arc::new(vec![track.instance_id()]),
+            has_available_track: is_in_library,
+            has_missing_tracks: !is_in_library,
+        }
+    }
+
+    fn build_grouped_grid_card_bases(
+        &self,
+        tracks: &[Track],
+        filtered_track_indices: &[usize],
+        group_by: GridGroupBy,
+    ) -> Vec<GridCardBase> {
+        let mut group_positions = HashMap::<GridGroupKey, usize>::new();
+        let mut groups = Vec::<GridCardAccumulator>::new();
+
+        for &playlist_index in filtered_track_indices {
+            let Some(track) = tracks.get(playlist_index) else {
+                continue;
+            };
+
+            let key = Self::grid_group_key(track, group_by);
+            let group_index = if let Some(&group_index) = group_positions.get(&key) {
+                group_index
+            } else {
+                let title = match &key {
+                    GridGroupKey::Album { album, .. } => album.clone(),
+                    GridGroupKey::Artist(name) => name.clone(),
+                    GridGroupKey::AlbumArtist(name) => name.clone(),
+                };
+                let subtitle = match &key {
+                    GridGroupKey::Album { album_artist, .. } => album_artist.clone(),
+                    GridGroupKey::Artist(_) | GridGroupKey::AlbumArtist(_) => String::new(),
+                };
+
+                let group_index = groups.len();
+                group_positions.insert(key.clone(), group_index);
+                groups.push(GridCardAccumulator::new(title, subtitle));
+                group_index
+            };
+
+            let group = &mut groups[group_index];
+            group.playlist_indices.push(playlist_index);
+            group.track_ids.push(track.instance_id());
+
+            if group.artwork_filename.is_none() {
+                group.artwork_filename = track.metadata.artwork_filename.clone();
+            }
+
+            if self.library.media.contains_key(&track.path) {
+                group.has_available_track = true;
+            } else {
+                group.has_missing_tracks = true;
+            }
+
+            if let Some(duration) = track.metadata.duration {
+                group.total_duration += duration;
+                group.has_duration = true;
+            }
+
+            group.album_keys.insert(Self::grid_album_identity(track));
+        }
+
+        groups
+            .into_iter()
+            .map(|group| {
+                let track_count = group.playlist_indices.len();
+                let album_count = group.album_keys.len();
+
+                let subtitle = match group_by {
+                    GridGroupBy::Album => {
+                        if group.has_available_track {
+                            group.subtitle
+                        } else {
+                            fl!("not-in-library")
+                        }
+                    }
+                    GridGroupBy::Artist | GridGroupBy::AlbumArtist => {
+                        if group.has_available_track {
+                            Self::grid_album_count_text(album_count)
+                        } else {
+                            fl!("not-in-library")
+                        }
+                    }
+                    GridGroupBy::Track => String::new(),
+                };
+
+                GridCardBase {
+                    title: group.title,
+                    subtitle,
+                    info_text: Self::grid_track_count_text(track_count),
+                    duration_text: format_optional_duration(
+                        group.has_duration.then_some(group.total_duration),
+                    ),
+                    artwork_filename: group.artwork_filename,
+                    playlist_indices: Arc::new(group.playlist_indices),
+                    track_ids: Arc::new(group.track_ids),
+                    has_available_track: group.has_available_track,
+                    has_missing_tracks: group.has_missing_tracks,
+                }
+            })
+            .collect()
+    }
+
+    fn pick_group_playback_index(&self, playlist: &Playlist, indices: &[usize]) -> Option<usize> {
+        let playable_indices: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|&index| {
+                playlist
+                    .tracks()
+                    .get(index)
+                    .map(|track| self.library.media.contains_key(&track.path))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        if playable_indices.is_empty() {
+            return None;
+        }
+
+        if self.state.shuffle {
+            use rand::Rng;
+            let random_index = rand::rng().random_range(0..playable_indices.len());
+            playable_indices.get(random_index).copied()
+        } else {
+            playable_indices.first().copied()
+        }
+    }
+
+    fn grid_track_subtitle(track: &Track, is_in_library: bool) -> String {
+        if !is_in_library {
+            return fl!("not-in-library");
+        }
+
+        let artist = non_empty_text(track.metadata.artist.as_deref())
+            .or_else(|| non_empty_text(track.metadata.album_artist.as_deref()));
+        let album = non_empty_text(track.metadata.album.as_deref());
+
+        join_non_empty(
+            &[
+                artist.as_deref().unwrap_or_default(),
+                album.as_deref().unwrap_or_default(),
+            ],
+            " • ",
+        )
+    }
+
+    fn grid_album_identity(track: &Track) -> String {
+        let album = fallback_text(track.metadata.album.as_deref(), "Unknown Album");
+        let album_artist = fallback_text(
+            track
+                .metadata
+                .album_artist
+                .as_deref()
+                .or(track.metadata.artist.as_deref()),
+            "Unknown Album Artist",
+        );
+        format!("{}::{}", album.to_lowercase(), album_artist.to_lowercase())
+    }
+
+    fn grid_group_key(track: &Track, group_by: GridGroupBy) -> GridGroupKey {
+        match group_by {
+            GridGroupBy::Track => unreachable!("track grouping does not use a grouped key"),
+            GridGroupBy::Album => GridGroupKey::Album {
+                album: fallback_text(track.metadata.album.as_deref(), "Unknown Album"),
+                album_artist: fallback_text(
+                    track
+                        .metadata
+                        .album_artist
+                        .as_deref()
+                        .or(track.metadata.artist.as_deref()),
+                    "Unknown Album Artist",
+                ),
+            },
+            GridGroupBy::Artist => GridGroupKey::Artist(fallback_text(
+                track
+                    .metadata
+                    .artist
+                    .as_deref()
+                    .or(track.metadata.album_artist.as_deref()),
+                "Unknown Artist",
+            )),
+            GridGroupBy::AlbumArtist => GridGroupKey::AlbumArtist(fallback_text(
+                track
+                    .metadata
+                    .album_artist
+                    .as_deref()
+                    .or(track.metadata.artist.as_deref()),
+                "Unknown Album Artist",
+            )),
+        }
+    }
+
+    fn grid_track_count_text(track_count: usize) -> String {
+        if track_count == 1 {
+            "1 track".to_string()
+        } else {
+            format!("{track_count} tracks")
+        }
+    }
+
+    fn grid_album_count_text(album_count: usize) -> String {
+        if album_count == 1 {
+            "1 album".to_string()
+        } else {
+            format!("{album_count} albums")
+        }
+    }
+
+    fn grid_layout_metrics(&self, width: f32) -> GridLayoutMetrics {
+        let artwork_size = clamp(
+            self.grid_size_multiplier * GRID_ARTWORK_SCALE,
+            GRID_MIN_ARTWORK_SIZE,
+            GRID_MAX_ARTWORK_SIZE,
+        );
+        let card_width = artwork_size + (GRID_CARD_PADDING * 2.0);
+        let card_height = artwork_size
+            + (GRID_CARD_PADDING * 2.0)
+            + GRID_TITLE_HEIGHT
+            + GRID_SUBTITLE_HEIGHT
+            + GRID_INFO_HEIGHT
+            + (GRID_CARD_CONTENT_SPACING * 3.0);
+        let available_width = (width - (GRID_VIEW_PADDING * 2.0)).max(card_width);
+        let column_count = (((available_width + GRID_ITEM_SPACING)
+            / (card_width + GRID_ITEM_SPACING))
+            .floor() as usize)
+            .max(1);
+
+        GridLayoutMetrics {
+            artwork_size,
+            card_width,
+            card_height,
+            card_padding: GRID_CARD_PADDING,
+            column_count,
+            item_spacing: GRID_ITEM_SPACING,
+            row_stride: card_height + GRID_ITEM_SPACING,
+            view_padding: GRID_VIEW_PADDING,
+        }
+    }
+
+    fn grid_row_stride(&self) -> f32 {
+        self.grid_layout_metrics(self.state.window_width).row_stride
+    }
+
+    fn grid_visible_row_count(&self, height: f32) -> usize {
+        Self::grid_visible_row_count_for_stride(height, self.grid_row_stride())
+    }
+
+    fn grid_visible_row_count_for_stride(height: f32, row_stride: f32) -> usize {
+        if row_stride == 0.0 {
+            0
+        } else {
+            (height / row_stride).ceil() as usize
+        }
+    }
+
+    fn grid_total_rows(track_count: usize, column_count: usize) -> usize {
+        if track_count == 0 {
+            0
+        } else {
+            (track_count - 1) / column_count.max(1) + 1
+        }
+    }
+
+    fn max_list_start(track_count: usize, visible_row_count: usize) -> usize {
+        track_count.saturating_sub(visible_row_count.max(1))
     }
 }
 
@@ -2263,12 +3737,16 @@ pub enum MenuAction {
     Quit,
     RenamePlaylist,
     SelectAll,
+    SetViewMode(ViewMode),
     Settings,
+    ToggleMute,
     ToggleRepeat,
     ToggleRepeatMode,
     ToggleShuffle,
     TrackInfoPanel,
     UpdateLibrary,
+    VolumeDown,
+    VolumeUp,
     ZoomIn,
     ZoomOut,
 }
@@ -2289,12 +3767,16 @@ impl menu::action::MenuAction for MenuAction {
             MenuAction::RenamePlaylist => Message::RenamePlaylist,
             MenuAction::Quit => Message::Quit,
             MenuAction::SelectAll => Message::SelectAll,
+            MenuAction::SetViewMode(view_mode) => Message::SetViewMode(*view_mode),
             MenuAction::Settings => Message::ToggleContextPage(ContextPage::Settings),
+            MenuAction::ToggleMute => Message::ToggleMute,
             MenuAction::ToggleRepeat => Message::ToggleRepeat,
             MenuAction::ToggleRepeatMode => Message::ToggleRepeatMode,
             MenuAction::ToggleShuffle => Message::ToggleShuffle,
             MenuAction::TrackInfoPanel => Message::ToggleContextPage(ContextPage::TrackInfo),
             MenuAction::UpdateLibrary => Message::UpdateLibrary,
+            MenuAction::VolumeDown => Message::VolumeDown,
+            MenuAction::VolumeUp => Message::VolumeUp,
             MenuAction::ZoomIn => Message::ZoomIn,
             MenuAction::ZoomOut => Message::ZoomOut,
         }
@@ -2304,9 +3786,16 @@ impl menu::action::MenuAction for MenuAction {
 #[derive(Clone, Debug)]
 pub enum DialogPage {
     NewPlaylist(String),
-    RenamePlaylist { id: u32, name: String },
+    RenamePlaylist {
+        id: u32,
+        name: String,
+    },
     DeletePlaylist(u32),
     DeleteSelectedFromPlaylist,
+    ConfirmPlaylistDuplicate {
+        destination_id: PlaylistId,
+        tracks: VecDeque<Track>,
+    },
 }
 
 pub struct DialogPages {
@@ -2351,7 +3840,14 @@ impl DialogPages {
 pub enum SortBy {
     Artist,
     Album,
+    AlbumArtist,
+    DiscNumber,
+    DiscTotal,
+    Duration,
+    FilePath,
+    Genre,
     Title,
+    TrackTotal,
 }
 
 #[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]
@@ -2366,9 +3862,10 @@ pub enum PlaylistKind {
     User,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ViewMode {
     List,
+    Grid,
 }
 
 fn track_info_row<'a>(title: String, data: String) -> widget::Row<'a, Message> {
@@ -2389,11 +3886,205 @@ fn track_info_row<'a>(title: String, data: String) -> widget::Row<'a, Message> {
         .width(Length::Fill)
 }
 
+fn list_column_label(column: ListColumn) -> String {
+    match column {
+        ListColumn::TrackNumber => fl!("track-number-short"),
+        ListColumn::Title => fl!("title"),
+        ListColumn::Album => fl!("album"),
+        ListColumn::Artist => fl!("artist"),
+        ListColumn::AlbumArtist => fl!("album-artist"),
+        ListColumn::TrackTotal => fl!("track-count"),
+        ListColumn::DiscNumber => fl!("album-disc-number"),
+        ListColumn::DiscTotal => fl!("album-disc-count"),
+        ListColumn::Genre => fl!("genre"),
+        ListColumn::FilePath => fl!("file-path"),
+        ListColumn::Duration => fl!("duration"),
+    }
+}
+
+fn list_column_settings_control<'a>(
+    config: &Config,
+    column: ListColumn,
+    can_move_up: bool,
+    can_move_down: bool,
+    spacing: u16,
+) -> Element<'a, Message> {
+    let mut controls = row().spacing(spacing).align_y(Alignment::Center);
+
+    if column.is_toggleable() {
+        let toggle: Element<'a, Message> = match column {
+            ListColumn::TrackNumber => toggler(config.list_show_track_number_column)
+                .on_toggle(Message::ToggleListTrackNumberColumn)
+                .into(),
+            ListColumn::Album => toggler(config.list_show_album_column)
+                .on_toggle(Message::ToggleListAlbumColumn)
+                .into(),
+            ListColumn::AlbumArtist => toggler(config.list_show_album_artist_column)
+                .on_toggle(Message::ToggleListAlbumArtistColumn)
+                .into(),
+            ListColumn::Artist => toggler(config.list_show_artist_column)
+                .on_toggle(Message::ToggleListArtistColumn)
+                .into(),
+            ListColumn::TrackTotal => toggler(config.list_show_track_total_column)
+                .on_toggle(Message::ToggleListTrackTotalColumn)
+                .into(),
+            ListColumn::DiscNumber => toggler(config.list_show_disc_number_column)
+                .on_toggle(Message::ToggleListDiscNumberColumn)
+                .into(),
+            ListColumn::DiscTotal => toggler(config.list_show_disc_total_column)
+                .on_toggle(Message::ToggleListDiscTotalColumn)
+                .into(),
+            ListColumn::Genre => toggler(config.list_show_genre_column)
+                .on_toggle(Message::ToggleListGenreColumn)
+                .into(),
+            ListColumn::FilePath => toggler(config.list_show_file_path_column)
+                .on_toggle(Message::ToggleListFilePathColumn)
+                .into(),
+            ListColumn::Duration => toggler(config.list_show_duration_column)
+                .on_toggle(Message::ToggleListDurationColumn)
+                .into(),
+            ListColumn::Title => toggler(config.list_show_title_column)
+                .on_toggle(Message::ToggleListTitleColumn)
+                .into(),
+        };
+
+        controls = controls.push(toggle);
+    }
+
+    controls
+        .push(
+            widget::button::icon(widget::icon::from_name("pan-up-symbolic"))
+                .extra_small()
+                .on_press_maybe(can_move_up.then_some(Message::MoveListColumnUp(column))),
+        )
+        .push(
+            widget::button::icon(widget::icon::from_name("pan-down-symbolic"))
+                .extra_small()
+                .on_press_maybe(can_move_down.then_some(Message::MoveListColumnDown(column))),
+        )
+        .into()
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct CachedViewBaseKey {
+    playlist_id: PlaylistId,
+    normalized_search: Option<String>,
+}
+
+struct CachedViewBase {
+    key: CachedViewBaseKey,
+    filtered_track_indices: Arc<Vec<usize>>,
+    selected_track_ids: Arc<Vec<String>>,
+    max_track_number_chars: usize,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct CachedGridCardBaseKey {
+    playlist_id: PlaylistId,
+    normalized_search: Option<String>,
+    group_by: GridGroupBy,
+}
+
+struct CachedGridCardBase {
+    key: CachedGridCardBaseKey,
+    cards: Arc<Vec<GridCardBase>>,
+}
+
+#[derive(Clone)]
+struct GridCardBase {
+    title: String,
+    subtitle: String,
+    info_text: String,
+    duration_text: String,
+    artwork_filename: Option<String>,
+    playlist_indices: Arc<Vec<usize>>,
+    track_ids: Arc<Vec<String>>,
+    has_available_track: bool,
+    has_missing_tracks: bool,
+}
+
+#[derive(Clone)]
+pub struct GridCardModel {
+    pub title: String,
+    pub subtitle: String,
+    pub info_text: String,
+    pub duration_text: String,
+    pub artwork_filename: Option<String>,
+    pub playlist_indices: Arc<Vec<usize>>,
+    pub track_ids: Arc<Vec<String>>,
+    pub selected: bool,
+    pub is_playing: bool,
+    pub has_available_track: bool,
+    pub has_missing_tracks: bool,
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+enum GridGroupKey {
+    Album { album: String, album_artist: String },
+    Artist(String),
+    AlbumArtist(String),
+}
+
+struct GridCardAccumulator {
+    title: String,
+    subtitle: String,
+    artwork_filename: Option<String>,
+    playlist_indices: Vec<usize>,
+    track_ids: Vec<String>,
+    has_available_track: bool,
+    has_missing_tracks: bool,
+    total_duration: f32,
+    has_duration: bool,
+    album_keys: HashSet<String>,
+}
+
+impl GridCardAccumulator {
+    fn new(title: String, subtitle: String) -> Self {
+        Self {
+            title,
+            subtitle,
+            artwork_filename: None,
+            playlist_indices: Vec::new(),
+            track_ids: Vec::new(),
+            has_available_track: false,
+            has_missing_tracks: false,
+            total_duration: 0.0,
+            has_duration: false,
+            album_keys: HashSet::new(),
+        }
+    }
+}
+
+struct GridLayoutMetrics {
+    artwork_size: f32,
+    card_width: f32,
+    card_height: f32,
+    card_padding: f32,
+    column_count: usize,
+    item_spacing: f32,
+    row_stride: f32,
+    view_padding: f32,
+}
+
+pub struct GridViewModel {
+    pub visible_cards: Vec<GridCardModel>,
+    pub selected_track_ids: Arc<Vec<String>>,
+    pub column_count: usize,
+    pub card_width: f32,
+    pub card_height: f32,
+    pub artwork_size: f32,
+    pub card_padding: f32,
+    pub item_spacing: f32,
+    pub view_padding: f32,
+    pub top_spacer_height: f32,
+    pub bottom_spacer_height: f32,
+}
+
 pub struct ListViewModel {
-    pub visible_tracks: Vec<(usize, Track)>,
+    pub visible_track_indices: Vec<usize>,
+    pub selected_track_ids: Arc<Vec<String>>,
+    pub max_track_number_chars: usize,
     pub list_start: usize,
-    pub list_end: usize,
-    pub take: usize,
     pub number_column_width: f32,
     pub icon_column_width: f32,
     pub row_stride: f32,
@@ -2404,4 +4095,75 @@ pub struct ListViewModel {
     pub wrapping: Wrapping,
     pub row_align: Alignment,
     pub sort_direction_icon: String,
+}
+
+/// Drag payload
+#[derive(Debug, Clone)]
+pub struct TrackDropData {
+    pub track_ids: Vec<TrackId>,
+}
+
+impl TrackDropData {
+    pub fn new(track_ids: Vec<TrackId>) -> Self {
+        Self { track_ids }
+    }
+}
+
+// For the drag source
+impl AsMimeTypes for TrackDropData {
+    fn available(&self) -> Cow<'static, [String]> {
+        Cow::Owned(vec![MIME_TRACK_IDS.to_string(), "text/plain".to_string()])
+    }
+
+    fn as_bytes(&self, mime_type: &str) -> Option<Cow<'static, [u8]>> {
+        match mime_type {
+            MIME_TRACK_IDS => serde_json::to_vec(&self.track_ids).ok().map(Cow::Owned),
+            "text/plain" => Some(Cow::Owned(self.track_ids.join("\n").into_bytes())),
+            _ => None,
+        }
+    }
+}
+
+// For the drop destination
+impl AllowedMimeTypes for TrackDropData {
+    fn allowed() -> Cow<'static, [String]> {
+        Cow::Owned(vec![MIME_TRACK_IDS.to_string(), "text/plain".to_string()])
+    }
+}
+
+impl TryFrom<(Vec<u8>, String)> for TrackDropData {
+    type Error = String;
+
+    fn try_from((bytes, mime): (Vec<u8>, String)) -> Result<Self, Self::Error> {
+        match mime.as_str() {
+            MIME_TRACK_IDS => {
+                let track_ids: Vec<TrackId> =
+                    serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                Ok(Self { track_ids })
+            }
+            "text/plain" => {
+                let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+                let track_ids = text
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                Ok(Self { track_ids })
+            }
+            other => Err(format!("Unsupported mime type: {other}")),
+        }
+    }
+}
+
+// For nav_bar click
+fn nav_activate(id: nav_bar::Id) -> Action<Message> {
+    Action::Cosmic(cosmic::app::Action::NavBar(id))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum PlaylistDuplicateDialogAction {
+    Add,
+    YesToAll,
+    NoToAll,
+    Skip,
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0
 
-use crate::app::{AppModel, SortBy, SortDirection};
+use crate::app::{AppModel, SortBy, SortDirection, ViewMode};
 use crate::playback_state::RepeatMode;
 use cosmic::{
     Application,
@@ -13,10 +13,31 @@ use std::collections::HashSet;
 pub const CONFIG_VERSION: u64 = 1;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum TitleSortMode {
+    Alphabetical,
+    TrackNumber,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum PlaylistDuplicatePolicy {
+    Allow,
+    Disallow,
+    Ask,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum AppTheme {
     Dark,
     Light,
     System,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum GridGroupBy {
+    Track,
+    Album,
+    Artist,
+    AlbumArtist,
 }
 
 impl AppTheme {
@@ -29,14 +50,133 @@ impl AppTheme {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ListColumn {
+    TrackTotal,
+    TrackNumber,
+    Title,
+    Album,
+    AlbumArtist,
+    Artist,
+    DiscNumber,
+    DiscTotal,
+    Duration,
+    FilePath,
+    Genre,
+}
+
+impl ListColumn {
+    pub const ALL: [Self; 11] = [
+        Self::TrackTotal,
+        Self::TrackNumber,
+        Self::Title,
+        Self::Album,
+        Self::AlbumArtist,
+        Self::Artist,
+        Self::DiscNumber,
+        Self::DiscTotal,
+        Self::Duration,
+        Self::FilePath,
+        Self::Genre,
+    ];
+
+    pub fn default_order() -> Vec<Self> {
+        Self::ALL.to_vec()
+    }
+
+    pub fn is_toggleable(&self) -> bool {
+        matches!(
+            self,
+            Self::Album
+                | Self::AlbumArtist
+                | Self::Artist
+                | Self::DiscNumber
+                | Self::DiscTotal
+                | Self::Duration
+                | Self::FilePath
+                | Self::Genre
+                | Self::Title
+                | Self::TrackNumber
+                | Self::TrackTotal
+        )
+    }
+
+    pub fn is_visible(&self, config: &Config) -> bool {
+        match self {
+            Self::Album => config.list_show_album_column,
+            Self::AlbumArtist => config.list_show_album_artist_column,
+            Self::Artist => config.list_show_artist_column,
+            Self::DiscNumber => config.list_show_disc_number_column,
+            Self::DiscTotal => config.list_show_disc_total_column,
+            Self::Duration => config.list_show_duration_column,
+            Self::FilePath => config.list_show_file_path_column,
+            Self::Genre => config.list_show_genre_column,
+            Self::Title => config.list_show_title_column,
+            Self::TrackTotal => config.list_show_track_total_column,
+            Self::TrackNumber => config.list_show_track_number_column,
+        }
+    }
+
+    pub fn sort_by(&self) -> Option<SortBy> {
+        match self {
+            Self::TrackNumber => None,
+            Self::TrackTotal => Some(SortBy::TrackTotal),
+            Self::Title => Some(SortBy::Title),
+            Self::Album => Some(SortBy::Album),
+            Self::AlbumArtist => Some(SortBy::AlbumArtist),
+            Self::Artist => Some(SortBy::Artist),
+            Self::DiscNumber => Some(SortBy::DiscNumber),
+            Self::DiscTotal => Some(SortBy::DiscTotal),
+            Self::Duration => Some(SortBy::Duration),
+            Self::Genre => Some(SortBy::Genre),
+            Self::FilePath => Some(SortBy::FilePath),
+        }
+    }
+
+    pub fn normalize_order(columns: &[Self]) -> Vec<Self> {
+        let mut normalized = Vec::with_capacity(Self::ALL.len());
+
+        for column in columns {
+            if Self::ALL.contains(column) && !normalized.contains(column) {
+                normalized.push(*column);
+            }
+        }
+
+        for column in Self::ALL {
+            if !normalized.contains(&column) {
+                normalized.push(column);
+            }
+        }
+
+        normalized
+    }
+}
+
 #[derive(Clone, CosmicConfigEntry, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[version = 1]
 #[serde(default)]
 pub struct Config {
     pub app_theme: AppTheme,
     pub library_paths: HashSet<String>,
+    pub grid_group_by: GridGroupBy,
     pub list_text_wrap: bool,
     pub list_row_align_top: bool,
+    pub list_show_album_column: bool,
+    pub list_show_album_artist_column: bool,
+    pub list_show_artist_column: bool,
+    pub list_show_disc_number_column: bool,
+    pub list_show_disc_total_column: bool,
+    pub list_show_duration_column: bool,
+    pub list_show_file_path_column: bool,
+    pub list_show_genre_column: bool,
+    pub list_show_title_column: bool,
+    pub list_show_track_number_column: bool,
+    pub list_show_track_total_column: bool,
+    pub list_column_order: Vec<ListColumn>,
+    pub title_sort: TitleSortMode,
+    pub sort_case_sensitive: bool,
+    pub playlist_duplicate_policy: PlaylistDuplicatePolicy,
+    pub view_mode: ViewMode,
 }
 
 impl Config {
@@ -58,6 +198,10 @@ impl Config {
             }
         }
     }
+
+    pub fn normalized_list_column_order(&self) -> Vec<ListColumn> {
+        ListColumn::normalize_order(&self.list_column_order)
+    }
 }
 
 impl Default for Config {
@@ -65,8 +209,25 @@ impl Default for Config {
         Self {
             app_theme: AppTheme::System,
             library_paths: HashSet::new(),
+            grid_group_by: GridGroupBy::Track,
             list_text_wrap: true,
             list_row_align_top: false,
+            list_show_album_column: true,
+            list_show_album_artist_column: false,
+            list_show_artist_column: true,
+            list_show_disc_number_column: false,
+            list_show_disc_total_column: false,
+            list_show_genre_column: false,
+            list_show_duration_column: false,
+            list_show_file_path_column: false,
+            list_show_title_column: true,
+            list_show_track_number_column: false,
+            list_show_track_total_column: false,
+            list_column_order: ListColumn::default_order(),
+            title_sort: TitleSortMode::Alphabetical,
+            sort_case_sensitive: false,
+            playlist_duplicate_policy: PlaylistDuplicatePolicy::Allow,
+            view_mode: ViewMode::List,
         }
     }
 }
@@ -79,7 +240,8 @@ pub struct State {
     pub repeat: bool,
     pub repeat_mode: RepeatMode,
     pub shuffle: bool,
-    pub size_multiplier: f32,
+    pub list_size_multiplier: Option<f32>,
+    pub grid_size_multiplier: Option<f32>,
     pub sort_by: SortBy,
     pub sort_direction: SortDirection,
     pub volume: i32,
@@ -95,7 +257,8 @@ impl Default for State {
             repeat: false,
             repeat_mode: RepeatMode::All,
             shuffle: false,
-            size_multiplier: 8.0,
+            list_size_multiplier: None,
+            grid_size_multiplier: None,
             sort_by: SortBy::Artist,
             sort_direction: SortDirection::Ascending,
             volume: 100,
@@ -106,6 +269,18 @@ impl Default for State {
 }
 
 impl State {
+    pub const DEFAULT_SIZE_MULTIPLIER: f32 = 8.0;
+
+    pub fn effective_list_size_multiplier(&self) -> f32 {
+        self.list_size_multiplier
+            .unwrap_or(Self::DEFAULT_SIZE_MULTIPLIER)
+    }
+
+    pub fn effective_grid_size_multiplier(&self) -> f32 {
+        self.grid_size_multiplier
+            .unwrap_or(Self::DEFAULT_SIZE_MULTIPLIER)
+    }
+
     pub fn load() -> (Option<cosmic_config::Config>, Self) {
         match cosmic_config::Config::new_state(AppModel::APP_ID, CONFIG_VERSION) {
             Ok(config_handler) => {
