@@ -32,6 +32,10 @@ pub const SEARCH_INPUT_WIDTH: f32 = 240.0;
 pub const LIBRARY_FILENAME: &str = "library.json";
 pub const PLAYLISTS_DIR: &str = "playlists";
 pub const ARTWORK_DIR: &str = "artwork";
+pub const ARTWORK_MEDIUM_SIZE: u32 = 256;
+pub const ARTWORK_SMALL_SIZE: u32 = 128;
+pub const ARTWORK_MEDIUM_SUFFIX: &str = "medium";
+pub const ARTWORK_SMALL_SUFFIX: &str = "small";
 pub const MIN_FILE_SIZE: u64 = 4096;
 
 /// Timing Constants
@@ -59,4 +63,4 @@ pub const LIBRARY_TRACK_DROP_PREFIX: &str = "library:";
 /// Playback Constants
 pub const DEFAULT_CROSSFADE_DURATION_SECS: i32 = 5;
 pub const MIN_CROSSFADE_DURATION_SECS: i32 = 1;
-pub const MAX_CROSSFADE_DURATION_SECS: i32 = 10;
+pub const MAX_CROSSFADE_DURATION_SECS: i32 = 30;
